@@ -367,6 +367,7 @@ try {
   assert.match(oneCommandInstaller, /Orange-Probe-Docker-v\$version\.zip/);
   assert.match(oneCommandInstaller, /SHA256 verification failed/);
   assert.match(oneCommandInstaller, /docker compose --project-name orange-probe build --pull/);
+  assert.match(oneCommandInstaller, /failed its startup health check/);
   const serverUpdaterSource = fs.readFileSync(path.join(rootDir, "updater", "index.js"), "utf8");
   assert.match(serverUpdaterSource, /releases\/download\/v\$\{version\}/);
   assert.match(serverUpdaterSource, /createHash\("sha256"\)/);

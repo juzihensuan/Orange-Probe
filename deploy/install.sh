@@ -184,10 +184,20 @@ docker compose --project-name orange-probe build --pull
 docker compose --project-name orange-probe up -d --no-build --remove-orphans
 
 echo "Waiting for Orange Probe..."
-for attempt in $(seq 1 60); do
-  if curl -fsS "http://127.0.0.1:$published_port/api/health" >/dev/null 2>&1; then break; fi
+healthy=false
+for ((attempt = 1; attempt <= 60; attempt += 1)); do
+  if curl -fsS "http://127.0.0.1:$published_port/api/health" >/dev/null 2>&1; then
+    healthy=true
+    break
+  fi
   sleep 2
 done
+if [ "$healthy" != "true" ]; then
+  echo "Orange Probe failed its startup health check." >&2
+  docker compose --project-name orange-probe ps >&2 || true
+  docker compose --project-name orange-probe logs --tail=100 orange-probe orange-probe-updater >&2 || true
+  exit 1
+fi
 
 echo "Orange Probe installation completed."
 echo "Installed version: $version"
