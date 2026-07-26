@@ -13,7 +13,7 @@ import { resolveRegion } from "../agent/region.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const appVersion = "1.1.2";
+const appVersion = "1.1.3";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const githubToken = String(process.env.GITHUB_TOKEN || "");
@@ -28,6 +28,7 @@ const sessionTtl = 12 * 60 * 60 * 1000;
 const historyRetentionMs = 7 * 24 * 60 * 60 * 1000;
 const historySampleInterval = 30 * 1000;
 const maxHistoryResponsePoints = 1200;
+const agentUpdateTimeoutMs = Math.max(1000, Number(process.env.AGENT_UPDATE_TIMEOUT_MS || 5 * 60 * 1000));
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(rootDir, "data");
 const settingsFile = path.join(dataDir, "settings.json");
 const serverConfigsFile = path.join(dataDir, "servers.json");
@@ -241,26 +242,71 @@ function updateEntryForAgent(agentId) {
   return entry && typeof entry === "object" ? entry : null;
 }
 
+function expireAgentUpdateEntries(now = Date.now()) {
+  let changed = false;
+  for (const [agentId, entry] of Object.entries(updateState.agents)) {
+    if (!entry || entry.status !== "installing") continue;
+    const dispatchedAt = Number(entry.dispatchedAt || entry.startedAt || entry.updatedAt || entry.requestedAt) || 0;
+    if (!dispatchedAt || now - dispatchedAt <= agentUpdateTimeoutMs) continue;
+    updateState.agents[agentId] = {
+      ...entry,
+      status: "failed",
+      updatedAt: now,
+      error: "更新超时，Agent 未确认完成。请检查 Agent 日志后重新提交更新。",
+    };
+    changed = true;
+  }
+  if (changed) saveUpdateState();
+}
+
+function updateStatusMatchesEntry(entry, reportedStatus) {
+  if (!reportedStatus) return false;
+  const reportedTarget = String(reportedStatus.targetVersion || "");
+  const reportedAttempt = String(reportedStatus.attemptId || "");
+  if (reportedTarget && reportedTarget !== entry.targetVersion) return false;
+  if (reportedAttempt && entry.attemptId && reportedAttempt !== entry.attemptId) return false;
+  return true;
+}
+
 function applyAgentUpdateReport(node, report) {
+  expireAgentUpdateEntries();
   const entry = updateEntryForAgent(node.id);
-  if (!entry) return null;
   const reportedStatus = report?.updateStatus && typeof report.updateStatus === "object" ? report.updateStatus : null;
-  if (reportedStatus?.state === "failed") {
+  const terminalStatus = new Set(["success", "failed"]).has(String(reportedStatus?.state || ""));
+  if (!entry) return { update: null, updateStatusAcknowledged: terminalStatus };
+  const statusMatches = updateStatusMatchesEntry(entry, reportedStatus);
+  if (reportedStatus?.state === "failed" && statusMatches) {
     updateState.agents[node.id] = { ...entry, status: "failed", updatedAt: Date.now(), error: String(reportedStatus.error || "Agent update failed").slice(0, 500) };
     saveUpdateState();
-    return null;
+    return { update: null, updateStatusAcknowledged: true };
   }
-  if ((!entry.force && compareVersions(node.version, entry.targetVersion) >= 0) || (entry.force && reportedStatus?.state === "success" && compareVersions(node.version, entry.targetVersion) >= 0)) {
+  if ((!entry.force && compareVersions(node.version, entry.targetVersion) >= 0) || (entry.force && statusMatches && reportedStatus?.state === "success" && compareVersions(node.version, entry.targetVersion) >= 0)) {
     updateState.agents[node.id] = { ...entry, status: "completed", installedVersion: node.version, completedAt: Date.now(), updatedAt: Date.now(), error: "" };
     saveUpdateState();
-    return null;
+    return { update: null, updateStatusAcknowledged: terminalStatus };
   }
-  if (!new Set(["pending", "installing"]).has(entry.status) || entry.targetVersion !== appVersion) return null;
-  if (entry.status !== "installing") {
-    updateState.agents[node.id] = { ...entry, status: "installing", startedAt: Date.now(), updatedAt: Date.now(), error: "" };
+  if (entry.targetVersion !== appVersion && new Set(["pending", "installing"]).has(entry.status)) {
+    updateState.agents[node.id] = { ...entry, status: "failed", updatedAt: Date.now(), error: "目标版本已过期，请重新提交更新。" };
     saveUpdateState();
+    return { update: null, updateStatusAcknowledged: terminalStatus };
   }
-  return { version: entry.targetVersion, manifestUrl: "/downloads/agent/manifest.json", force: Boolean(entry.force) };
+  if (entry.status !== "pending") return { update: null, updateStatusAcknowledged: terminalStatus };
+  const dispatchedAt = Date.now();
+  const installingEntry = {
+    ...entry,
+    status: "installing",
+    startedAt: Number(entry.startedAt) || dispatchedAt,
+    dispatchedAt,
+    updatedAt: dispatchedAt,
+    dispatchCount: Number(entry.dispatchCount || 0) + 1,
+    error: "",
+  };
+  updateState.agents[node.id] = installingEntry;
+  saveUpdateState();
+  return {
+    update: { version: entry.targetVersion, manifestUrl: "/downloads/agent/manifest.json", force: Boolean(entry.force), attemptId: entry.attemptId },
+    updateStatusAcknowledged: terminalStatus,
+  };
 }
 
 function normalizeIp(value) {
@@ -2072,12 +2118,14 @@ app.get("/api/admin/agents/:id/status", requireAdmin, (req, res) => {
 });
 
 app.get("/api/admin/updates", requireAdmin, async (_req, res) => {
+  expireAgentUpdateEntries();
   const release = await latestGithubRelease();
   const agents = Object.entries(serverConfigs)
     .filter(([, config]) => Boolean(config?.agentTokenHash))
     .map(([id, config]) => {
       const node = nodes.get(id) || registeredAgentPlaceholder(id, config);
-      const entry = updateEntryForAgent(id);
+      const storedEntry = updateEntryForAgent(id);
+      const entry = storedEntry?.targetVersion === appVersion ? storedEntry : null;
       const capabilities = Array.isArray(node.capabilities) ? node.capabilities : [];
       const supportsAutoUpdate = capabilities.includes("self-update");
       const updateAvailable = supportsAutoUpdate && compareVersions(node.version, appVersion) < 0;
@@ -2124,14 +2172,19 @@ app.post("/api/admin/updates/agents", requireAdmin, (req, res) => {
     const node = nodes.get(id);
     const supportsAutoUpdate = Array.isArray(node?.capabilities) && node.capabilities.includes("self-update");
     if (!config?.agentTokenHash || !supportsAutoUpdate) {
-      skipped.push({ id, reason: "Agent 需要先重新执行 v1.1.2 安装命令" });
+      skipped.push({ id, reason: "Agent 需要先重新执行 v1.1.2 或更高版本的安装命令" });
       continue;
     }
     if (!force && compareVersions(node.version, appVersion) >= 0) {
       skipped.push({ id, reason: "已是当前版本" });
       continue;
     }
-    updateState.agents[id] = { targetVersion: appVersion, status: "pending", force, requestedAt: Date.now(), updatedAt: Date.now(), error: "" };
+    const existingEntry = updateEntryForAgent(id);
+    if (existingEntry?.targetVersion === appVersion && new Set(["pending", "installing"]).has(existingEntry.status)) {
+      skipped.push({ id, reason: "已有更新任务正在执行" });
+      continue;
+    }
+    updateState.agents[id] = { targetVersion: appVersion, attemptId: crypto.randomUUID(), status: "pending", force, requestedAt: Date.now(), updatedAt: Date.now(), dispatchCount: 0, error: "" };
     queued.push(id);
   }
   saveUpdateState();
@@ -2139,7 +2192,7 @@ app.post("/api/admin/updates/agents", requireAdmin, (req, res) => {
 });
 
 app.post("/api/admin/updates/server", requireAdmin, async (req, res) => {
-  if (!updaterUrl || !updaterToken) return res.status(503).json({ error: "服务端更新容器未配置，请使用 v1.1.2 Docker Compose 部署" });
+  if (!updaterUrl || !updaterToken) return res.status(503).json({ error: "服务端更新容器未配置，请使用 v1.1.2 或更高版本的 Docker Compose 部署" });
   const release = await latestGithubRelease(true);
   if (!req.body?.force && compareVersions(release.version, appVersion) <= 0) return res.status(409).json({ error: "服务端已经是最新版本" });
   updateState.server = { targetVersion: release.version, status: "requested", requestedAt: Date.now(), error: "" };
@@ -2353,14 +2406,15 @@ function acceptAgentReport(report, suppliedToken) {
       recordServiceResult(result.serviceId, node.id, result, "agent");
     }
   }
-  const update = applyAgentUpdateReport(node, { updateStatus });
+  const updateResult = applyAgentUpdateReport(node, { updateStatus });
   broadcast();
   return {
     ok: true,
     id: node.id,
     nextReportIn: Math.max(1000, Number(report.reportInterval) || 3000),
     monitors: monitorTasksForServer(node.id),
-    ...(update ? { update } : {}),
+    updateStatusAcknowledged: Boolean(updateResult.updateStatusAcknowledged),
+    ...(updateResult.update ? { update: updateResult.update } : {}),
   };
 }
 

@@ -10,6 +10,7 @@ const installDir = path.resolve(argumentsMap.get("--install") || "");
 const dataDir = path.resolve(argumentsMap.get("--data") || "");
 const parentPid = Number(argumentsMap.get("--parent") || 0);
 const targetVersion = String(argumentsMap.get("--version") || "unknown");
+const attemptId = String(argumentsMap.get("--attempt") || "");
 const resultFile = path.join(dataDir, "update-result.json");
 const backupDir = path.join(dataDir, "update-backup");
 const allowedFiles = ["index.js", "region.js", "updater.js", "package.json", "package-lock.json"];
@@ -30,7 +31,7 @@ function parentIsAlive() {
 
 function writeResult(state, error = "") {
   fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(resultFile, `${JSON.stringify({ state, targetVersion, error, timestamp: Date.now() }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.writeFileSync(resultFile, `${JSON.stringify({ state, targetVersion, attemptId, error, timestamp: Date.now() }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 function installDependencies() {

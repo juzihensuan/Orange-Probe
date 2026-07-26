@@ -110,7 +110,7 @@ export default function Shell(props: ShellProps) {
             <span className={props.connected ? "status-dot online" : "status-dot offline"} />
             <span><b>{props.connected ? "实时连接正常" : "正在重新连接"}</b><small>WebSocket 采集通道</small></span>
           </div>
-          <span className="version">Orange Probe v1.1.2</span>
+          <span className="version">Orange Probe v1.1.3</span>
         </div>
       </aside>
 

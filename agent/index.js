@@ -118,6 +118,16 @@ function saveUpdateStatus(status) {
   }
 }
 
+function refreshUpdateStatusFromDisk() {
+  try {
+    const storedStatus = JSON.parse(fs.readFileSync(updateResultFile, "utf8"));
+    if (!storedStatus || typeof storedStatus !== "object") return;
+    if (!updateStatus || Number(storedStatus.timestamp || 0) >= Number(updateStatus.timestamp || 0)) updateStatus = storedStatus;
+  } catch (error) {
+    if (error?.code !== "ENOENT") appendAgentLog("ERROR", `cannot refresh update status: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 function acknowledgeUpdateStatus() {
   if (!updateStatus) return;
   updateStatus = null;
@@ -132,6 +142,7 @@ async function performAgentUpdate(update) {
   if (updateInProgress || !update?.version || !update?.manifestUrl) return;
   if (!update.force && compareVersions(staticInfo.version, update.version) >= 0) return;
   updateInProgress = true;
+  const attemptId = String(update.attemptId || "");
   const stagingDir = path.join(agentDataDir, `update-${Date.now()}`);
   try {
     const manifestUrl = new URL(String(update.manifestUrl), `${serverUrl}/`).toString();
@@ -153,7 +164,8 @@ async function performAgentUpdate(update) {
       fs.writeFileSync(path.join(stagingDir, file.name), content, { mode: 0o600 });
     }
     appendAgentLog("INFO", `verified Agent update v${update.version}; handing off to updater`);
-    const updaterProcess = spawn(process.execPath, [path.join(stagingDir, "updater.js"), "--staging", stagingDir, "--install", agentRootDir, "--data", agentDataDir, "--parent", String(process.pid), "--version", String(update.version)], {
+    saveUpdateStatus({ state: "installing", targetVersion: String(update.version), attemptId, timestamp: Date.now() });
+    const updaterProcess = spawn(process.execPath, [path.join(stagingDir, "updater.js"), "--staging", stagingDir, "--install", agentRootDir, "--data", agentDataDir, "--parent", String(process.pid), "--version", String(update.version), "--attempt", attemptId], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
@@ -163,7 +175,7 @@ async function performAgentUpdate(update) {
     setTimeout(() => process.exit(75), 500).unref();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    saveUpdateStatus({ state: "failed", targetVersion: String(update.version), error: message, timestamp: Date.now() });
+    saveUpdateStatus({ state: "failed", targetVersion: String(update.version), attemptId, error: message, timestamp: Date.now() });
     appendAgentLog("ERROR", `Agent update v${update.version} failed: ${message}`);
     try {
       fs.rmSync(stagingDir, { recursive: true, force: true });
@@ -233,7 +245,7 @@ const staticInfo = {
   arch: os.arch(),
   cpuModel: cpuInfo.model || "Unknown CPU",
   cpuCores: os.cpus().length,
-  version: "1.1.2",
+  version: "1.1.3",
   capabilities: ["self-update"],
   tags,
   reportInterval: interval,
@@ -582,7 +594,7 @@ function connectAgentSocket() {
       }
       if (message.type === "report-accepted") {
         monitorTasks = Array.isArray(message.monitors) ? message.monitors : [];
-        acknowledgeUpdateStatus();
+        if (message.updateStatusAcknowledged) acknowledgeUpdateStatus();
         scheduleAgentUpdate(message.update);
         logHealthyReport(wsUrl);
         return;
@@ -612,6 +624,7 @@ async function report() {
   if (reporting) return;
   reporting = true;
   try {
+    refreshUpdateStatusFromDisk();
     const [cpu, platformStats, monitorResults] = await Promise.all([getCpuUsage(), getPlatformStats(), runDueMonitors()]);
     const memoryTotal = os.totalmem();
     const memoryUsed = memoryTotal - os.freemem();
@@ -670,7 +683,7 @@ async function report() {
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
       const result = await response.json();
       monitorTasks = Array.isArray(result.monitors) ? result.monitors : [];
-      acknowledgeUpdateStatus();
+      if (result.updateStatusAcknowledged) acknowledgeUpdateStatus();
       scheduleAgentUpdate(result.update);
       logHealthyReport(serverUrl);
     }
