@@ -107,9 +107,8 @@ async function copyReleaseSource(sourceDir) {
   }
 }
 
-async function releaseImages(sourceDir) {
-  const releaseComposeFile = path.join(sourceDir, "docker-compose.yml");
-  const argumentsList = ["compose", "--env-file", "/deployment/.env", "-f", releaseComposeFile, "--project-name", projectName, "config", "--format", "json"];
+async function configuredImages() {
+  const argumentsList = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName, "config", "--format", "json"];
   const output = await runCommand("docker", argumentsList);
   const config = JSON.parse(output);
   const appImage = String(config?.services?.["orange-probe"]?.image || "");
@@ -170,7 +169,7 @@ async function updateServer(targetVersion) {
     const sourceDir = path.join(temporaryDir, `orange-probe-docker-v${version}`);
     await downloadRelease(version, archivePath);
     await runCommand("unzip", ["-q", archivePath, "-d", temporaryDir]);
-    const images = await releaseImages(sourceDir);
+    const images = await configuredImages();
     const imageSource = await prepareReleaseImages(sourceDir, images, version);
     await copyReleaseSource(sourceDir);
     const baseArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName];

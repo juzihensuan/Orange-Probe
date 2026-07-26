@@ -243,7 +243,7 @@ const staticInfo = {
   arch: os.arch(),
   cpuModel: cpuInfo.model || "Unknown CPU",
   cpuCores: os.cpus().length,
-  version: "1.1.6",
+  version: "1.1.7",
   capabilities: ["self-update"],
   tags,
   reportInterval: interval,
