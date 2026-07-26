@@ -21,10 +21,10 @@ cp .env .env.before-v1.1.2
 
 ## 3. 使用一键脚本升级
 
-旧部署目录为 `/opt/orange-probe` 时直接执行：
+当前仓库为私有仓库。旧部署目录为 `/opt/orange-probe` 时执行以下一条命令，并按提示输入具备 Contents 和 Packages 读取权限的 GitHub PAT：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/juzihensuan/Orange-Probe/main/deploy/install.sh | sudo bash
+read -rsp "GitHub PAT: " GITHUB_TOKEN; echo; export GITHUB_TOKEN; curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw+json" https://api.github.com/repos/juzihensuan/Orange-Probe/contents/deploy/install.sh | sudo -E env GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_USERNAME="juzihensuan" bash
 ```
 
 脚本会保留已有 `.env` 和 `orange-probe-data` 数据卷，更新 Compose 文件并拉取：
@@ -40,6 +40,8 @@ ghcr.io/juzihensuan/orange-probe-updater:latest
 DEPLOY_PATH=/opt/orange-probe
 ORANGE_PROBE_TAG=latest
 UPDATE_TOKEN=$(openssl rand -hex 32)
+GITHUB_USERNAME=juzihensuan
+GITHUB_TOKEN=你的私有仓库读取PAT
 ```
 
 `UPDATE_TOKEN` 至少 32 位，文件权限应保持为 `0600`。

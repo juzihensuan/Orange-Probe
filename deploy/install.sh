@@ -4,6 +4,7 @@ set -euo pipefail
 repository="juzihensuan/Orange-Probe"
 deploy_path="${DEPLOY_PATH:-/opt/orange-probe}"
 raw_base="https://raw.githubusercontent.com/$repository/main"
+github_api="https://api.github.com/repos/$repository/contents"
 
 if [ "$(id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
@@ -53,10 +54,27 @@ random_hex() {
   fi
 }
 
+github_download() {
+  local repository_path="$1"
+  local destination="$2"
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -fsSL \
+      -H "Authorization: Bearer $GITHUB_TOKEN" \
+      -H "Accept: application/vnd.github.raw+json" \
+      "$github_api/$repository_path?ref=main" \
+      -o "$destination"
+  else
+    curl -fsSL "$raw_base/$repository_path" -o "$destination"
+  fi
+}
+
 install_curl
 install_docker
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "${GITHUB_USERNAME:-juzihensuan}" --password-stdin
+fi
 install -d -m 0750 "$deploy_path"
-curl -fsSL "$raw_base/docker-compose.yml" -o "$deploy_path/docker-compose.yml"
+github_download "docker-compose.yml" "$deploy_path/docker-compose.yml"
 
 generated_password=""
 if [ ! -f "$deploy_path/.env" ]; then
@@ -75,6 +93,8 @@ PUBLIC_PORT=${PUBLIC_PORT:-4174}
 DEPLOY_PATH=$deploy_path
 ORANGE_PROBE_TAG=${ORANGE_PROBE_TAG:-latest}
 UPDATE_TOKEN=$(random_hex 32)
+GITHUB_USERNAME=${GITHUB_USERNAME:-juzihensuan}
+GITHUB_TOKEN=${GITHUB_TOKEN:-}
 TELEGRAM_API_BASE_URL=https://api.telegram.org
 EOF
   chmod 0600 "$deploy_path/.env"
@@ -93,6 +113,15 @@ ensure_env_value() {
 ensure_env_value "DEPLOY_PATH" "$deploy_path"
 ensure_env_value "ORANGE_PROBE_TAG" "${ORANGE_PROBE_TAG:-latest}"
 ensure_env_value "UPDATE_TOKEN" "$(random_hex 32)"
+ensure_env_value "GITHUB_USERNAME" "${GITHUB_USERNAME:-juzihensuan}"
+ensure_env_value "GITHUB_TOKEN" "${GITHUB_TOKEN:-}"
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  if grep -q '^GITHUB_TOKEN=' "$deploy_path/.env"; then
+    sed -i "s|^GITHUB_TOKEN=.*$|GITHUB_TOKEN=$GITHUB_TOKEN|" "$deploy_path/.env"
+  else
+    printf 'GITHUB_TOKEN=%s\n' "$GITHUB_TOKEN" >> "$deploy_path/.env"
+  fi
+fi
 chmod 0600 "$deploy_path/.env"
 
 published_port="$(sed -n 's/^PUBLIC_PORT=//p' "$deploy_path/.env" | tail -n 1)"

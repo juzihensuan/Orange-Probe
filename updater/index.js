@@ -1,11 +1,13 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 
 const port = Number(process.env.UPDATER_PORT || 4180);
 const updateToken = String(process.env.UPDATE_TOKEN || "");
 const composeFile = String(process.env.COMPOSE_FILE || "/deployment/docker-compose.yml");
 const projectName = String(process.env.COMPOSE_PROJECT_NAME || "orange-probe");
+const githubUsername = String(process.env.GITHUB_USERNAME || "juzihensuan");
+const githubToken = String(process.env.GITHUB_TOKEN || "");
 let updating = false;
 let lastUpdate = { status: "idle", startedAt: 0, completedAt: 0, error: "" };
 
@@ -18,12 +20,27 @@ function tokenMatches(header) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
-function runDocker(argumentsList) {
+function runDocker(argumentsList, input = "") {
   return new Promise((resolve, reject) => {
-    execFile("docker", argumentsList, { timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) return reject(new Error(String(stderr || stdout || error.message).trim().slice(0, 2000)));
-      return resolve(String(stdout || ""));
+    const child = spawn("docker", argumentsList, { stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    let outputSize = 0;
+    const collect = (target) => (chunk) => {
+      outputSize += chunk.length;
+      if (outputSize <= 4 * 1024 * 1024) target.push(chunk);
+    };
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    const timeout = setTimeout(() => child.kill(), 15 * 60_000);
+    child.once("error", (error) => { clearTimeout(timeout); reject(error); });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      const output = Buffer.concat(code === 0 ? stdout : stderr.length ? stderr : stdout).toString("utf8").trim();
+      if (code !== 0) reject(new Error(output.slice(0, 2000) || `docker exited with code ${code}`));
+      else resolve(output);
     });
+    child.stdin.end(input);
   });
 }
 
@@ -31,6 +48,7 @@ async function updateServer(targetVersion) {
   updating = true;
   lastUpdate = { status: "running", targetVersion, startedAt: Date.now(), completedAt: 0, error: "" };
   try {
+    if (githubToken) await runDocker(["login", "ghcr.io", "-u", githubUsername, "--password-stdin"], githubToken);
     const baseArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName];
     await runDocker([...baseArguments, "pull", "orange-probe"]);
     await runDocker([...baseArguments, "up", "-d", "--no-deps", "--no-build", "orange-probe"]);

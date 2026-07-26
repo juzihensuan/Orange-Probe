@@ -77,6 +77,8 @@ Docker Compose 会读取项目根目录的 `.env`。首次生产启动必须提�
 | `DEPLOY_PATH` | `/opt/orange-probe` | 更新容器读取 Compose 文件的宿主机绝对目录 |
 | `ORANGE_PROBE_TAG` | `latest` | GHCR 镜像标签，可固定为具体版本 |
 | `UPDATE_TOKEN` | 无 | 主面板调用内部更新容器的随机密钥，至少 32 位 |
+| `GITHUB_USERNAME` | `juzihensuan` | 私有 GHCR 登录用户名 |
+| `GITHUB_TOKEN` | 空 | 私有仓库读取与 GHCR 拉取凭据；公开仓库可留空 |
 | `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API 地址；通常不需要修改，测试或自建网关时使用 |
 | `PROBE_SERVER_URL` | `http://127.0.0.1:4174` | Agent 上报地址 |
 | `PROBE_TRANSPORT` | `http` | Agent 上报方式，反代模式使用 `ws` |
@@ -93,13 +95,19 @@ Docker Compose 会读取项目根目录的 `.env`。首次生产启动必须提�
 
 从旧版本升级到 v1.1.2 时请先阅读 [v1.1.2 升级指南](docs/upgrade-v1.1.2.md)。v1.1.2 首次引入更新容器和 Agent 自更新协议，因此旧部署需要手动升级一次；之后可在后台一键更新。
 
-全新服务器一条命令安装：
+当前仓库为私有仓库。全新服务器使用一条命令安装，命令会隐藏输入 GitHub PAT：
+
+```bash
+read -rsp "GitHub PAT: " GITHUB_TOKEN; echo; export GITHUB_TOKEN; curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw+json" https://api.github.com/repos/juzihensuan/Orange-Probe/contents/deploy/install.sh | sudo -E env GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_USERNAME="juzihensuan" bash
+```
+
+PAT 需要该私有仓库的 Contents 读取权限和 Packages 读取权限；经典 PAT 使用 `repo` 与 `read:packages`。脚本会自动安装 Docker Engine 与 Docker Compose、登录私有 GHCR、生成管理员密码和更新密钥并启动服务。默认只监听 `127.0.0.1:4174`，适合接入 1Panel OpenResty。
+
+仓库和两个 GHCR 包都改为公开后，可使用无需 Token 的命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/juzihensuan/Orange-Probe/main/deploy/install.sh | sudo bash
 ```
-
-脚本会自动安装 Docker Engine 与 Docker Compose、生成管理员密码和更新密钥、拉取 GHCR 镜像并启动服务。默认只监听 `127.0.0.1:4174`，适合接入 1Panel OpenResty。
 
 ```bash
 cp .env.example .env

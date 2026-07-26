@@ -16,6 +16,7 @@ const rootDir = path.resolve(__dirname, "..");
 const appVersion = "1.1.2";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
+const githubToken = String(process.env.GITHUB_TOKEN || "");
 const updaterUrl = String(process.env.UPDATER_URL || "").replace(/\/$/, "");
 const updaterToken = String(process.env.UPDATE_TOKEN || "");
 const isProduction = process.env.NODE_ENV === "production";
@@ -216,7 +217,7 @@ async function latestGithubRelease(force = false) {
   if (!force && latestReleaseCache.value && Date.now() - latestReleaseCache.checkedAt < 5 * 60_000) return latestReleaseCache.value;
   try {
     const response = await fetch(`${githubApiBaseUrl}/repos/${githubRepository}/releases/latest`, {
-      headers: { accept: "application/vnd.github+json", "user-agent": `Orange-Probe/${appVersion}` },
+      headers: { accept: "application/vnd.github+json", "user-agent": `Orange-Probe/${appVersion}`, ...(githubToken ? { authorization: `Bearer ${githubToken}` } : {}) },
       signal: AbortSignal.timeout(8000),
     });
     if (!response.ok) throw new Error(`GitHub API HTTP ${response.status}`);
