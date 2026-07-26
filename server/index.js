@@ -2117,35 +2117,42 @@ app.get("/api/admin/agents/:id/status", requireAdmin, (req, res) => {
   return res.json({ id: node.id, name: node.name, status: online ? "online" : "offline", online, lastSeen: node.lastSeen, ip: node.ip, version: node.version });
 });
 
-app.get("/api/admin/updates", requireAdmin, async (_req, res) => {
+app.get("/api/admin/updates", requireAdmin, async (req, res) => {
   expireAgentUpdateEntries();
-  const release = await latestGithubRelease();
+  const release = await latestGithubRelease(String(req.query.refresh || "") === "1");
+  const serverUpdateRequired = compareVersions(release.version, appVersion) > 0;
   const agents = Object.entries(serverConfigs)
     .filter(([, config]) => Boolean(config?.agentTokenHash))
     .map(([id, config]) => {
       const node = nodes.get(id) || registeredAgentPlaceholder(id, config);
       const storedEntry = updateEntryForAgent(id);
-      const entry = storedEntry?.targetVersion === appVersion ? storedEntry : null;
+      const entry = !serverUpdateRequired && storedEntry?.targetVersion === appVersion ? storedEntry : null;
       const capabilities = Array.isArray(node.capabilities) ? node.capabilities : [];
       const supportsAutoUpdate = capabilities.includes("self-update");
-      const updateAvailable = supportsAutoUpdate && compareVersions(node.version, appVersion) < 0;
+      const packageUpdateAvailable = supportsAutoUpdate && compareVersions(node.version, appVersion) < 0;
+      const latestUpdateAvailable = supportsAutoUpdate && compareVersions(node.version, release.version) < 0;
+      const updateAvailable = packageUpdateAvailable && !serverUpdateRequired;
       return {
         id,
         name: config.name || node.name,
         online: node.source === "agent" && node.status === "online",
         version: node.version || "--",
-        targetVersion: entry?.targetVersion || appVersion,
-        status: entry?.status || (updateAvailable ? "available" : supportsAutoUpdate ? "current" : "manual"),
+        targetVersion: entry?.targetVersion || release.version,
+        packageVersion: appVersion,
+        latestVersion: release.version,
+        status: entry?.status || (serverUpdateRequired && latestUpdateAvailable ? "server-required" : updateAvailable ? "available" : supportsAutoUpdate ? "current" : "manual"),
         error: entry?.error || "",
         requestedAt: Number(entry?.requestedAt) || 0,
         updatedAt: Number(entry?.updatedAt || entry?.completedAt) || 0,
         supportsAutoUpdate,
         updateAvailable,
+        serverUpdateRequired: serverUpdateRequired && latestUpdateAvailable,
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
   return res.json({
     repository: githubRepository,
+    agentPackageVersion: appVersion,
     server: {
       currentVersion: appVersion,
       latestVersion: release.version,
@@ -2522,7 +2529,7 @@ app.get("/downloads/agent/manifest.json", (_req, res) => {
     const download = downloadableAgentFiles.get(`/downloads/agent/${name}`);
     if (!download || !fs.existsSync(download.file)) return null;
     const content = fs.readFileSync(download.file);
-    return { name, url: `/downloads/agent/${name}`, size: content.length, sha256: crypto.createHash("sha256").update(content).digest("hex") };
+    return { name, url: `/downloads/agent/${name}?v=${encodeURIComponent(appVersion)}`, size: content.length, sha256: crypto.createHash("sha256").update(content).digest("hex") };
   }).filter(Boolean);
   if (files.length !== updateFiles.length) return res.status(503).json({ error: "Agent update package is incomplete" });
   res.setHeader("Cache-Control", "no-store");
@@ -2543,7 +2550,9 @@ app.get("/flags/:file", (req, res) => {
 app.get([...downloadableAgentFiles.keys()], (req, res) => {
   const download = downloadableAgentFiles.get(req.path);
   if (!download || !fs.existsSync(download.file)) return res.status(404).json({ error: "Agent package not found" });
-  res.setHeader("Cache-Control", "public, max-age=300");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
   res.type(download.type);
   return res.sendFile(download.file);
 });

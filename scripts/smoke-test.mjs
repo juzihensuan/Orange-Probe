@@ -17,6 +17,7 @@ const adminPassword = "SmokeAdminPassword123!";
 const telegramMessages = [];
 const updaterRequests = [];
 const childLogs = [];
+let mockReleaseVersion = "1.1.4";
 let probeProcess;
 let agentProcess;
 let updaterProcess;
@@ -109,7 +110,7 @@ const mockServer = http.createServer((request, response) => {
   }
   if (request.method === "GET" && request.url === "/repos/juzihensuan/Orange-Probe/releases/latest") {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ tag_name: "v1.1.4", html_url: "https://github.com/juzihensuan/Orange-Probe/releases/tag/v1.1.4", published_at: "2026-07-26T00:00:00Z" }));
+    response.end(JSON.stringify({ tag_name: `v${mockReleaseVersion}`, html_url: `https://github.com/juzihensuan/Orange-Probe/releases/tag/v${mockReleaseVersion}`, published_at: "2026-07-26T00:00:00Z" }));
     return;
   }
   const chunks = [];
@@ -386,6 +387,7 @@ try {
   const { payload: agentManifest } = await request("/downloads/agent/manifest.json", { authenticated: false });
   assert.equal(agentManifest.version, "1.1.3");
   assert.deepEqual(agentManifest.files.map((file) => file.name).sort(), ["index.js", "package-lock.json", "package.json", "region.js", "updater.js"]);
+  assert.ok(agentManifest.files.every((file) => file.url.endsWith("?v=1.1.3")));
   for (const file of agentManifest.files) {
     const content = fs.readFileSync(path.join(rootDir, "agent", file.name));
     assert.equal(file.sha256, crypto.createHash("sha256").update(content).digest("hex"));
@@ -443,6 +445,7 @@ try {
   const { payload: initialUpdates } = await request("/api/admin/updates");
   assert.equal(initialUpdates.server.currentVersion, "1.1.3");
   assert.equal(initialUpdates.server.latestVersion, "1.1.4");
+  assert.equal(initialUpdates.agentPackageVersion, "1.1.3");
   assert.equal(initialUpdates.server.updateAvailable, true);
   assert.equal(initialUpdates.server.updaterConfigured, true);
   const { response: serverUpdateResponse, payload: serverUpdate } = await request("/api/admin/updates/server", { method: "POST", body: {} });
@@ -512,6 +515,18 @@ try {
   const { payload: updateAgent } = await request("/api/admin/agents", { method: "POST", body: { name: "Smoke Update Agent", token: updateAgentToken } });
   const oldUpdatePayload = { ...agentPayload("Smoke Update Agent"), version: "1.1.2", capabilities: ["self-update"] };
   await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": updateAgentToken }, body: oldUpdatePayload });
+  const { payload: updateBlockedByServer } = await request("/api/admin/updates");
+  const blockedAgentUpdate = updateBlockedByServer.agents.find((item) => item.id === updateAgent.id);
+  assert.equal(blockedAgentUpdate.targetVersion, "1.1.4");
+  assert.equal(blockedAgentUpdate.status, "server-required");
+  assert.equal(blockedAgentUpdate.serverUpdateRequired, true);
+  assert.equal(blockedAgentUpdate.updateAvailable, false);
+  mockReleaseVersion = "1.1.3";
+  const { payload: refreshedAgentUpdates } = await request("/api/admin/updates?refresh=1");
+  const refreshableAgent = refreshedAgentUpdates.agents.find((item) => item.id === updateAgent.id);
+  assert.equal(refreshableAgent.targetVersion, "1.1.3");
+  assert.equal(refreshableAgent.status, "available");
+  assert.equal(refreshableAgent.updateAvailable, true);
   const { payload: queuedUpdate } = await request("/api/admin/updates/agents", { method: "POST", body: { agentIds: [updateAgent.id] } });
   assert.deepEqual(queuedUpdate.queued, [updateAgent.id]);
   const { payload: updateInstruction } = await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": updateAgentToken }, body: oldUpdatePayload });
@@ -530,6 +545,8 @@ try {
   const updateManagementSource = fs.readFileSync(path.join(rootDir, "src", "components", "UpdateManagement.tsx"), "utf8");
   assert.doesNotMatch(updateManagementSource, /force:\s*!agent\.updateAvailable/);
   assert.match(updateManagementSource, /active \|\| working/);
+  assert.match(updateManagementSource, /\?refresh=1/);
+  assert.match(updateManagementSource, /检查中/);
   const agentSource = fs.readFileSync(path.join(rootDir, "agent", "index.js"), "utf8");
   assert.match(agentSource, /refreshUpdateStatusFromDisk/);
   assert.match(agentSource, /updateStatusAcknowledged/);

@@ -1132,7 +1132,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .agent-update-status { display: inline-flex; min-height: 23px; align-items: center; gap: 5px; border-radius: 12px; padding: 0 8px; font-size: 8px; font-weight: 680; white-space: nowrap; }
 .agent-update-status.current, .agent-update-status.completed { background: var(--green-soft); color: var(--green); }
 .agent-update-status.available, .agent-update-status.pending, .agent-update-status.installing { background: var(--blue-soft); color: var(--blue); }
-.agent-update-status.manual { background: var(--yellow-soft); color: var(--yellow); }
+.agent-update-status.manual, .agent-update-status.server-required { background: var(--yellow-soft); color: var(--yellow); }
 .agent-update-status.failed { background: var(--red-soft); color: var(--red); }
 .agent-update-error { display: block; max-width: 280px; overflow: hidden; margin-top: 4px; color: var(--red); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
 
