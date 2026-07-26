@@ -107,6 +107,42 @@ async function copyReleaseSource(sourceDir) {
   }
 }
 
+async function releaseImages(sourceDir) {
+  const releaseComposeFile = path.join(sourceDir, "docker-compose.yml");
+  const argumentsList = ["compose", "--env-file", "/deployment/.env", "-f", releaseComposeFile, "--project-name", projectName, "config", "--format", "json"];
+  const output = await runCommand("docker", argumentsList);
+  const config = JSON.parse(output);
+  const appImage = String(config?.services?.["orange-probe"]?.image || "");
+  const updaterImage = String(config?.services?.["orange-probe-updater"]?.image || "");
+  if (!appImage || !updaterImage) throw new Error("Release Compose file does not define update images");
+  return { appImage, updaterImage };
+}
+
+function versionedImage(image, version) {
+  const withoutDigest = String(image).split("@")[0];
+  const slash = withoutDigest.lastIndexOf("/");
+  const colon = withoutDigest.lastIndexOf(":");
+  const repository = colon > slash ? withoutDigest.slice(0, colon) : withoutDigest;
+  return `${repository}:${version}`;
+}
+
+async function pullReleaseImages(images, version) {
+  for (const configuredImage of [images.appImage, images.updaterImage]) {
+    const releaseImage = versionedImage(configuredImage, version);
+    await runCommand("docker", ["pull", releaseImage]);
+    if (releaseImage !== configuredImage) await runCommand("docker", ["image", "tag", releaseImage, configuredImage]);
+  }
+}
+
+async function scheduleUpdaterRecreate(updaterImage) {
+  const currentContainer = String(process.env.HOSTNAME || "").trim();
+  if (!/^[a-f0-9]{12,64}$/i.test(currentContainer)) throw new Error("Cannot identify the updater container for self-replacement");
+  const helperName = `${projectName.replace(/[^A-Za-z0-9_.-]/g, "-")}-updater-reloader-${Date.now()}`.slice(0, 120);
+  const composeArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName, "up", "-d", "--no-deps", "--no-build", "orange-probe-updater"];
+  const helperScript = `setTimeout(() => import("node:child_process").then(({ spawn }) => { const child = spawn("docker", ${JSON.stringify(composeArguments)}, { stdio: "inherit" }); child.once("error", () => process.exit(1)); child.once("exit", (code) => process.exit(code ?? 1)); }), 2000)`;
+  await runCommand("docker", ["run", "--rm", "-d", "--name", helperName, "--volumes-from", currentContainer, "--entrypoint", "node", updaterImage, "-e", helperScript]);
+}
+
 async function updateServer(targetVersion) {
   updating = true;
   lastUpdate = { status: "running", targetVersion, startedAt: Date.now(), completedAt: 0, error: "" };
@@ -118,10 +154,12 @@ async function updateServer(targetVersion) {
     const sourceDir = path.join(temporaryDir, `orange-probe-docker-v${version}`);
     await downloadRelease(version, archivePath);
     await runCommand("unzip", ["-q", archivePath, "-d", temporaryDir]);
+    const images = await releaseImages(sourceDir);
+    await pullReleaseImages(images, version);
     await copyReleaseSource(sourceDir);
     const baseArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName];
-    await runCommand("docker", [...baseArguments, "build", "--pull", "orange-probe"]);
     await runCommand("docker", [...baseArguments, "up", "-d", "--no-deps", "--no-build", "orange-probe"]);
+    await scheduleUpdaterRecreate(images.updaterImage);
     lastUpdate = { ...lastUpdate, targetVersion: version, status: "completed", completedAt: Date.now(), error: "" };
     console.log(`[${new Date().toISOString()}] Orange Probe server updated to ${version}`);
   } catch (error) {

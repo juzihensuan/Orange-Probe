@@ -13,7 +13,7 @@ import { resolveRegion } from "../agent/region.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const appVersion = "1.1.4";
+const appVersion = "1.1.5";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const githubToken = String(process.env.GITHUB_TOKEN || "");
