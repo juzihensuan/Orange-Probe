@@ -1,6 +1,6 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache docker-cli docker-cli-compose tini
+RUN apk add --no-cache docker-cli docker-cli-compose tini unzip
 WORKDIR /app
 COPY updater/index.js ./index.js
 

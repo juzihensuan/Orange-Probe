@@ -4,8 +4,7 @@ release/
 .github-remote-audit/
 .release-staging/
 .env
-data/admin-auth.json
-data/agent-token.key
+data/
 *.log
 *.tsbuildinfo
 vite.config.js

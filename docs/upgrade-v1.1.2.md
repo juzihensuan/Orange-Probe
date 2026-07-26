@@ -1,6 +1,6 @@
 # Orange Probe v1.1.2 升级指南
 
-v1.1.2 新增后台更新中心、GHCR 服务端镜像更新、Agent 自更新、Agent 依赖自动安装，并把服务监控最低间隔调整为 5 秒。数据卷格式保持兼容。
+v1.1.2 新增后台更新中心、GitHub Release 服务端更新、Agent 自更新、Agent 依赖自动安装，并把服务监控最低间隔调整为 5 秒。数据卷格式保持兼容。
 
 ## 1. 首次升级为什么需要手动操作
 
@@ -21,18 +21,13 @@ cp .env .env.before-v1.1.2
 
 ## 3. 使用一键脚本升级
 
-当前仓库为私有仓库。旧部署目录为 `/opt/orange-probe` 时执行以下一条命令，并按提示输入具备 Contents 和 Packages 读取权限的 GitHub PAT：
+仓库和 Release 均已公开。旧部署目录为 `/opt/orange-probe` 时直接执行：
 
 ```bash
-read -rsp "GitHub PAT: " GITHUB_TOKEN; echo; export GITHUB_TOKEN; curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw+json" https://api.github.com/repos/juzihensuan/Orange-Probe/contents/deploy/install.sh | sudo -E env GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_USERNAME="juzihensuan" bash
+curl -fsSL https://raw.githubusercontent.com/juzihensuan/Orange-Probe/main/deploy/install.sh | sudo bash
 ```
 
-脚本会保留已有 `.env` 和 `orange-probe-data` 数据卷，更新 Compose 文件并拉取：
-
-```text
-ghcr.io/juzihensuan/orange-probe:latest
-ghcr.io/juzihensuan/orange-probe-updater:latest
-```
+脚本会从最新 GitHub Release 下载完整 Docker 包并校验 SHA256，保留已有 `.env` 和 `orange-probe-data` 数据卷，然后在服务器本地构建并启动主服务与内部更新容器。安装过程不依赖 GHCR 包的公开状态。
 
 如果旧 `.env` 缺少以下变量，请补充随机值：
 
@@ -40,11 +35,10 @@ ghcr.io/juzihensuan/orange-probe-updater:latest
 DEPLOY_PATH=/opt/orange-probe
 ORANGE_PROBE_TAG=latest
 UPDATE_TOKEN=$(openssl rand -hex 32)
-GITHUB_USERNAME=juzihensuan
-GITHUB_TOKEN=你的私有仓库读取PAT
+GITHUB_TOKEN=
 ```
 
-`UPDATE_TOKEN` 至少 32 位，文件权限应保持为 `0600`。
+`UPDATE_TOKEN` 至少 32 位，文件权限应保持为 `0600`。公开仓库通常不需要 `GITHUB_TOKEN`；高频检查触发 GitHub API 匿名限流时可填写只读 Token。
 
 ## 4. 升级 Agent
 
@@ -60,7 +54,7 @@ GITHUB_TOKEN=你的私有仓库读取PAT
 
 发布新版本后，后台“系统更新”会从 GitHub Release 检查最新版本：
 
-- “一键更新服务端”让内部更新容器拉取 GHCR 最新镜像并只重建主面板容器。
+- “一键更新服务端”让内部更新容器下载目标版本的 Docker Release，更新部署源码并只重建主面板容器。
 - “更新全部 Agent”给在线或离线 Agent 排队；Agent 下次上线后下载更新清单、校验 SHA256、替换文件并自动重启。
 - 更新失败的 Agent 会恢复原文件并在后台显示错误信息。
 

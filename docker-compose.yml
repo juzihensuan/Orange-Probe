@@ -58,14 +58,14 @@ services:
       UPDATE_TOKEN: ${UPDATE_TOKEN}
       COMPOSE_PROJECT_NAME: orange-probe
       COMPOSE_FILE: /deployment/docker-compose.yml
-      GITHUB_USERNAME: ${GITHUB_USERNAME:-juzihensuan}
+      GITHUB_REPOSITORY: juzihensuan/Orange-Probe
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${DEPLOY_PATH:-/opt/orange-probe}:/deployment:ro
+      - ${DEPLOY_PATH:-/opt/orange-probe}:/deployment
     read_only: true
     tmpfs:
-      - /tmp:size=16m,mode=1777
+      - /tmp:size=64m,mode=1777
     cap_drop:
       - ALL
     security_opt:

@@ -86,7 +86,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           root="orange-probe-docker-v${version}"
           mkdir -p "release/${root}"
-          cp .dockerignore .env.example .gitignore docker-compose.yml Dockerfile index.html LICENSE package-lock.json package.json README.md "Telegram Bot.md" tsconfig.app.json tsconfig.json tsconfig.node.json vite.config.ts "release/${root}/"
+          cp .dockerignore .env.example .gitignore docker-compose.yml Dockerfile index.html LICENSE package-lock.json package.json "Telegram Bot.md" tsconfig.app.json tsconfig.json tsconfig.node.json vite.config.ts "release/${root}/"
           cp -R .github agent deploy docs scripts server src updater "release/${root}/"
           cd release
           zip -qr "Orange-Probe-Docker-v${version}.zip" "${root}"

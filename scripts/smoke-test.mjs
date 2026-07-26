@@ -363,6 +363,14 @@ try {
   const oneCommandInstaller = fs.readFileSync(path.join(rootDir, "deploy", "install.sh"), "utf8");
   assert.match(oneCommandInstaller, /get\.docker\.com/);
   assert.match(oneCommandInstaller, /UPDATE_TOKEN/);
+  assert.match(oneCommandInstaller, /releases\/latest/);
+  assert.match(oneCommandInstaller, /Orange-Probe-Docker-v\$version\.zip/);
+  assert.match(oneCommandInstaller, /SHA256 verification failed/);
+  assert.match(oneCommandInstaller, /docker compose --project-name orange-probe build --pull/);
+  const serverUpdaterSource = fs.readFileSync(path.join(rootDir, "updater", "index.js"), "utf8");
+  assert.match(serverUpdaterSource, /releases\/download\/v\$\{version\}/);
+  assert.match(serverUpdaterSource, /createHash\("sha256"\)/);
+  assert.match(serverUpdaterSource, /build", "--pull", "orange-probe/);
   const { response: flagResponse, payload: flagAsset } = await request("/flags/us.svg", { authenticated: false });
   assert.match(String(flagResponse.headers.get("content-type")), /image\/svg\+xml/);
   assert.match(flagAsset.text, /<svg/);
