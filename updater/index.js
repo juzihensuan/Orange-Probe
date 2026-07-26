@@ -134,6 +134,22 @@ async function pullReleaseImages(images, version) {
   }
 }
 
+async function buildReleaseImages(sourceDir, images) {
+  await runCommand("docker", ["build", "--pull", "--tag", images.appImage, "--file", path.join(sourceDir, "Dockerfile"), sourceDir]);
+  await runCommand("docker", ["build", "--pull", "--tag", images.updaterImage, "--file", path.join(sourceDir, "updater", "Dockerfile"), sourceDir]);
+}
+
+async function prepareReleaseImages(sourceDir, images, version) {
+  try {
+    await pullReleaseImages(images, version);
+    return "registry";
+  } catch (error) {
+    console.warn(`[${new Date().toISOString()}] Registry pull failed; building verified release source locally: ${error instanceof Error ? error.message : error}`);
+    await buildReleaseImages(sourceDir, images);
+    return "source";
+  }
+}
+
 async function scheduleUpdaterRecreate(updaterImage) {
   const currentContainer = String(process.env.HOSTNAME || "").trim();
   if (!/^[a-f0-9]{12,64}$/i.test(currentContainer)) throw new Error("Cannot identify the updater container for self-replacement");
@@ -155,12 +171,12 @@ async function updateServer(targetVersion) {
     await downloadRelease(version, archivePath);
     await runCommand("unzip", ["-q", archivePath, "-d", temporaryDir]);
     const images = await releaseImages(sourceDir);
-    await pullReleaseImages(images, version);
+    const imageSource = await prepareReleaseImages(sourceDir, images, version);
     await copyReleaseSource(sourceDir);
     const baseArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName];
     await runCommand("docker", [...baseArguments, "up", "-d", "--no-deps", "--no-build", "orange-probe"]);
     await scheduleUpdaterRecreate(images.updaterImage);
-    lastUpdate = { ...lastUpdate, targetVersion: version, status: "completed", completedAt: Date.now(), error: "" };
+    lastUpdate = { ...lastUpdate, targetVersion: version, imageSource, status: "completed", completedAt: Date.now(), error: "" };
     console.log(`[${new Date().toISOString()}] Orange Probe server updated to ${version}`);
   } catch (error) {
     lastUpdate = { ...lastUpdate, status: "failed", completedAt: Date.now(), error: error instanceof Error ? error.message : String(error) };
