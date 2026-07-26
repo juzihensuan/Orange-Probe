@@ -1,6 +1,6 @@
 {
   "name": "orange-probe",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "private": true,
   "type": "module",
   "description": "A lightweight real-time server monitoring dashboard and probe agent.",
@@ -12,7 +12,7 @@
     "docker:build": "docker compose build",
     "start": "node server/index.js",
     "agent": "node agent/index.js",
-    "check": "tsc -b && node --check server/index.js && node --check agent/index.js",
+    "check": "tsc -b && node --check server/index.js && node --check agent/index.js && node --check agent/updater.js && node --check updater/index.js",
     "test:smoke": "node scripts/smoke-test.mjs",
     "security:audit": "npm audit --omit=dev"
   },

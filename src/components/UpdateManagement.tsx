@@ -105,12 +105,22 @@ export default function UpdateManagement() {
   if (!data) return <div className="management-empty"><XCircle size={24} /><b>无法读取更新状态</b><button className="secondary-button" onClick={() => load(true)}>重试</button></div>;
 
   const availableAgents = data.agents.filter((agent) => agent.updateAvailable && !new Set(["pending", "installing"]).has(agent.status)).length;
+  const serverUpdateActive = new Set(["requested", "running", "restarting"]).has(data.server.status);
+  const serverStatusLabel = data.server.status === "failed"
+    ? "更新失败"
+    : data.server.status === "restarting"
+      ? "等待服务重启"
+      : serverUpdateActive
+        ? "正在更新"
+        : data.server.updateAvailable
+          ? "发现新版本"
+          : "已是最新版本";
   return <div className="page-stack update-management">
     <section className="management-summary update-summary"><span><PackageCheck size={20} /></span><div><b>Orange Probe 更新中心</b><small>{data.repository} · Agent 更新包 v{data.agentPackageVersion}</small></div><button className="secondary-button" onClick={() => load(true)} disabled={checking || working !== ""}><RefreshCw className={checking ? "spin" : ""} size={15} />{checking ? "检查中" : "检查更新"}</button></section>
     {message && <div className={`update-message ${message.ok ? "success" : "failed"}`}>{message.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}<span>{message.text}</span></div>}
     <section className="update-server-panel">
       <div className="update-panel-heading"><span><Server size={18} /></span><div><b>服务端</b><small>由内部更新容器校验 GitHub Release 并保留数据卷重建</small></div><a href={data.server.releaseUrl} target="_blank" rel="noreferrer">Release <ExternalLink size={13} /></a></div>
-      <div className="update-version-row"><span><small>当前版本</small><b>v{data.server.currentVersion}</b></span><i /><span><small>GitHub 最新版本</small><b className={data.server.updateAvailable ? "available" : ""}>v{data.server.latestVersion}</b></span><span className={`update-server-state ${data.server.status}`}>{data.server.updateAvailable ? "发现新版本" : "已是最新版本"}</span><button className="primary-button" disabled={!data.server.updateAvailable || !data.server.updaterConfigured || working !== ""} onClick={() => request("server", "/api/admin/updates/server", {})}>{working === "server" ? <RefreshCw className="spin" size={15} /> : <Download size={15} />}一键更新服务端</button></div>
+      <div className="update-version-row"><span><small>当前版本</small><b>v{data.server.currentVersion}</b></span><i /><span><small>GitHub 最新版本</small><b className={data.server.updateAvailable ? "available" : ""}>v{data.server.latestVersion}</b></span><span className={`update-server-state ${data.server.status}`}>{serverUpdateActive && <CircleDashed className="spin" size={12} />}{serverStatusLabel}</span><button className="primary-button" disabled={!data.server.updateAvailable || !data.server.updaterConfigured || serverUpdateActive || working !== ""} onClick={() => request("server", "/api/admin/updates/server", {})}>{working === "server" || serverUpdateActive ? <RefreshCw className="spin" size={15} /> : <Download size={15} />}{serverUpdateActive ? "更新中" : "一键更新服务端"}</button></div>
       {!data.server.updaterConfigured && <p className="update-inline-warning"><AlertTriangle size={14} />当前部署没有连接更新容器，请使用 v1.1.2 或更高版本的 Docker Compose 或一键安装命令部署。</p>}
       {data.server.error && <p className="update-inline-warning"><AlertTriangle size={14} />{data.server.error}</p>}
     </section>

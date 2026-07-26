@@ -1125,7 +1125,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .update-version-row b.available { color: var(--accent); }
 .update-version-row > i { position: relative; height: 1px; background: var(--border); }
 .update-version-row > i::after { position: absolute; top: -3px; right: 0; width: 7px; height: 7px; border-top: 1px solid var(--text-muted); border-right: 1px solid var(--text-muted); content: ""; transform: rotate(45deg); }
-.update-server-state { justify-self: start; border-radius: 12px; background: var(--green-soft); padding: 5px 9px; color: var(--green); font-size: 8px; font-weight: 680; }
+.update-server-state { display: inline-flex; align-items: center; gap: 5px; justify-self: start; border-radius: 12px; background: var(--green-soft); padding: 5px 9px; color: var(--green); font-size: 8px; font-weight: 680; }
+.update-server-state.requested, .update-server-state.running, .update-server-state.restarting { background: var(--blue-soft); color: var(--blue); }
+.update-server-state.failed { background: var(--red-soft); color: var(--red); }
 .update-inline-warning { display: flex; align-items: center; gap: 7px; margin: 0; border-top: 1px solid var(--border); background: var(--yellow-soft); padding: 10px 16px; color: var(--yellow); font-size: 8px; }
 .update-agent-table { min-width: 900px; }
 .update-agent-table th:last-child, .update-agent-table td:last-child { width: 80px; text-align: right; }

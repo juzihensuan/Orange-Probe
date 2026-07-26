@@ -13,7 +13,7 @@ import { resolveRegion } from "../agent/region.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const appVersion = "1.1.3";
+const appVersion = "1.1.4";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const githubToken = String(process.env.GITHUB_TOKEN || "");
@@ -234,6 +234,39 @@ async function latestGithubRelease(force = false) {
   } catch (error) {
     latestReleaseCache = { ...latestReleaseCache, checkedAt: Date.now(), error: error instanceof Error ? error.message : "GitHub release query failed" };
     return latestReleaseCache.value || { version: appVersion, tag: `v${appVersion}`, url: `https://github.com/${githubRepository}/releases/latest`, publishedAt: "" };
+  }
+}
+
+async function syncServerUpdaterState() {
+  if (!updaterUrl || !updaterToken || !new Set(["requested", "running", "restarting"]).has(String(updateState.server.status || ""))) return;
+  try {
+    const response = await fetch(`${updaterUrl}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const remote = payload?.lastUpdate && typeof payload.lastUpdate === "object" ? payload.lastUpdate : null;
+    if (!remote) return;
+    const targetVersion = String(updateState.server.targetVersion || "");
+    const remoteTarget = String(remote.targetVersion || "").replace(/^v/i, "");
+    if (targetVersion && remoteTarget && targetVersion !== remoteTarget) return;
+    const remoteStatus = String(remote.status || "");
+    let status = updateState.server.status;
+    let error = updateState.server.error || "";
+    if (remoteStatus === "running") {
+      status = "running";
+      error = "";
+    } else if (remoteStatus === "failed") {
+      status = "failed";
+      error = String(remote.error || "Updater failed").slice(0, 1000);
+    } else if (remoteStatus === "completed" && compareVersions(appVersion, targetVersion) < 0) {
+      status = "restarting";
+      error = "";
+    }
+    if (status !== updateState.server.status || error !== updateState.server.error) {
+      updateState.server = { ...updateState.server, status, error, updatedAt: Date.now() };
+      saveUpdateState();
+    }
+  } catch {
+    // The updater may be briefly unavailable while Docker recreates the application container.
   }
 }
 
@@ -2119,6 +2152,7 @@ app.get("/api/admin/agents/:id/status", requireAdmin, (req, res) => {
 
 app.get("/api/admin/updates", requireAdmin, async (req, res) => {
   expireAgentUpdateEntries();
+  await syncServerUpdaterState();
   const release = await latestGithubRelease(String(req.query.refresh || "") === "1");
   const serverUpdateRequired = compareVersions(release.version, appVersion) > 0;
   const agents = Object.entries(serverConfigs)
@@ -2202,7 +2236,7 @@ app.post("/api/admin/updates/server", requireAdmin, async (req, res) => {
   if (!updaterUrl || !updaterToken) return res.status(503).json({ error: "服务端更新容器未配置，请使用 v1.1.2 或更高版本的 Docker Compose 部署" });
   const release = await latestGithubRelease(true);
   if (!req.body?.force && compareVersions(release.version, appVersion) <= 0) return res.status(409).json({ error: "服务端已经是最新版本" });
-  updateState.server = { targetVersion: release.version, status: "requested", requestedAt: Date.now(), error: "" };
+  updateState.server = { targetVersion: release.version, status: "requested", requestedAt: Date.now(), updatedAt: Date.now(), error: "" };
   saveUpdateState();
   try {
     const response = await fetch(`${updaterUrl}/update`, {
@@ -2213,6 +2247,8 @@ app.post("/api/admin/updates/server", requireAdmin, async (req, res) => {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Updater HTTP ${response.status}`);
+    updateState.server = { ...updateState.server, status: "running", updatedAt: Date.now(), error: "" };
+    saveUpdateState();
     return res.status(202).json({ ok: true, targetVersion: release.version, message: payload.message || "更新任务已提交，服务端将自动重启" });
   } catch (error) {
     updateState.server = { ...updateState.server, status: "failed", error: error instanceof Error ? error.message : "Updater request failed", updatedAt: Date.now() };

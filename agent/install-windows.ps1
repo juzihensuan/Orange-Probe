@@ -90,8 +90,12 @@ if ($Transport -eq "ws") {
 }
 $launcherLines += @(
   "Set-Location $(ConvertTo-Literal $installDir)",
-  "& $(ConvertTo-Literal $nodePath) $(ConvertTo-Literal (Join-Path $installDir 'index.js'))",
-  'exit $LASTEXITCODE'
+  'while ($true) {',
+  "  & $(ConvertTo-Literal $nodePath) $(ConvertTo-Literal (Join-Path $installDir 'index.js'))",
+  '  $agentExitCode = $LASTEXITCODE',
+  '  if ($agentExitCode -eq 0) { exit 0 }',
+  '  if ($agentExitCode -eq 75) { Start-Sleep -Seconds 2 } else { Start-Sleep -Seconds 15 }',
+  '}'
 )
 Set-Content -LiteralPath $launcher -Value $launcherLines -Encoding UTF8
 

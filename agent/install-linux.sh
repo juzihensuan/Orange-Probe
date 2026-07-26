@@ -165,7 +165,7 @@ WorkingDirectory=$install_dir
 EnvironmentFile=$env_file
 ExecStart=$node_path $install_dir/index.js
 Restart=always
-RestartSec=30
+RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
 
@@ -185,7 +185,12 @@ set -a
 . "$env_file"
 set +a
 cd "$install_dir"
-exec "$node_path" "$install_dir/index.js"
+while true; do
+  "$node_path" "$install_dir/index.js"
+  exit_code=\$?
+  [ "\$exit_code" -ne 0 ] || exit 0
+  if [ "\$exit_code" -eq 75 ]; then sleep 2; else sleep 15; fi
+done
 EOF
   chmod 0755 "$runner"
   pid_file="$data_dir/agent.pid"

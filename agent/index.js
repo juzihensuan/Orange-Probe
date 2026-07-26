@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { resolveRegion } from "./region.js";
+import { AGENT_UPDATE_FILES, installStagedUpdate } from "./updater.js";
 
 const serverUrl = (process.env.PROBE_SERVER_URL || "http://127.0.0.1:4174").replace(/\/$/, "");
 const transport = process.env.PROBE_TRANSPORT === "ws" ? "ws" : "http";
@@ -150,7 +151,7 @@ async function performAgentUpdate(update) {
     if (!manifestResponse.ok) throw new Error(`manifest HTTP ${manifestResponse.status}`);
     const manifest = await manifestResponse.json();
     if (String(manifest.version) !== String(update.version)) throw new Error(`manifest version ${manifest.version || "unknown"} does not match ${update.version}`);
-    const allowedFiles = new Set(["index.js", "region.js", "updater.js", "package.json", "package-lock.json"]);
+    const allowedFiles = new Set(AGENT_UPDATE_FILES);
     const files = Array.isArray(manifest.files) ? manifest.files : [];
     if (files.length !== allowedFiles.size || files.some((file) => !allowedFiles.has(String(file?.name || "")))) throw new Error("manifest file list is invalid");
     fs.mkdirSync(stagingDir, { recursive: true });
@@ -163,16 +164,13 @@ async function performAgentUpdate(update) {
       if (!/^[a-f0-9]{64}$/i.test(String(file.sha256 || "")) || digest !== String(file.sha256).toLowerCase()) throw new Error(`${file.name} SHA256 verification failed`);
       fs.writeFileSync(path.join(stagingDir, file.name), content, { mode: 0o600 });
     }
-    appendAgentLog("INFO", `verified Agent update v${update.version}; handing off to updater`);
+    appendAgentLog("INFO", `verified Agent update v${update.version}; installing before restart`);
     saveUpdateStatus({ state: "installing", targetVersion: String(update.version), attemptId, timestamp: Date.now() });
-    const updaterProcess = spawn(process.execPath, [path.join(stagingDir, "updater.js"), "--staging", stagingDir, "--install", agentRootDir, "--data", agentDataDir, "--parent", String(process.pid), "--version", String(update.version), "--attempt", attemptId], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      env: process.env,
-    });
-    updaterProcess.unref();
-    setTimeout(() => process.exit(75), 500).unref();
+    const installed = installStagedUpdate({ stagingDir, installDir: agentRootDir, dataDir: agentDataDir, attemptId, allowDependencyChanges: true });
+    if (String(installed.version) !== String(update.version)) throw new Error(`installed version ${installed.version} does not match ${update.version}`);
+    saveUpdateStatus({ state: "success", targetVersion: String(update.version), attemptId, timestamp: Date.now() });
+    appendAgentLog("INFO", `Agent update v${update.version} installed; restarting to activate it`);
+    setTimeout(() => process.exit(75), 250).unref();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     saveUpdateStatus({ state: "failed", targetVersion: String(update.version), attemptId, error: message, timestamp: Date.now() });
@@ -245,7 +243,7 @@ const staticInfo = {
   arch: os.arch(),
   cpuModel: cpuInfo.model || "Unknown CPU",
   cpuCores: os.cpus().length,
-  version: "1.1.3",
+  version: "1.1.4",
   capabilities: ["self-update"],
   tags,
   reportInterval: interval,
