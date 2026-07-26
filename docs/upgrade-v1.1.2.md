@@ -27,18 +27,20 @@ cp .env .env.before-v1.1.2
 curl -fsSL https://raw.githubusercontent.com/juzihensuan/Orange-Probe/main/deploy/install.sh | sudo bash
 ```
 
-脚本会从最新 GitHub Release 下载完整 Docker 包并校验 SHA256，保留已有 `.env` 和 `orange-probe-data` 数据卷，然后在服务器本地构建并启动主服务与内部更新容器。安装过程不依赖 GHCR 包的公开状态。
+脚本会从最新 GitHub Release 下载完整 Docker 包并校验 SHA256，保留已有 `.env`、命名数据卷或旧版 `./data` 绑定目录，然后在服务器本地构建并启动主服务与内部更新容器。它还会从现有 `orange-probe` 容器自动识别旧 Compose 项目名，避免升级时发生容器名冲突。安装过程不依赖 GHCR 包的公开状态。
 
 如果旧 `.env` 缺少以下变量，请补充随机值：
 
 ```bash
 DEPLOY_PATH=/opt/orange-probe
+COMPOSE_PROJECT_NAME=orange-probe
+DATA_MOUNT=orange-probe-data
 ORANGE_PROBE_TAG=latest
 UPDATE_TOKEN=$(openssl rand -hex 32)
 GITHUB_TOKEN=
 ```
 
-`UPDATE_TOKEN` 至少 32 位，文件权限应保持为 `0600`。公开仓库通常不需要 `GITHUB_TOKEN`；高频检查触发 GitHub API 匿名限流时可填写只读 Token。
+`UPDATE_TOKEN` 至少 32 位，文件权限应保持为 `0600`。安装器会自动替换空值、短值和示例占位值。旧版使用 `./data:/app/data` 时设置 `DATA_MOUNT=./data`；安装器检测到现有数据目录后会自动设置。公开仓库通常不需要 `GITHUB_TOKEN`；高频检查触发 GitHub API 匿名限流时可填写只读 Token。
 
 ## 4. 升级 Agent
 

@@ -20,7 +20,7 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PUBLIC_PORT:-4174}:4174"
     volumes:
-      - orange-probe-data:/app/data
+      - ${DATA_MOUNT:-orange-probe-data}:/app/data
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
@@ -56,7 +56,7 @@ services:
     restart: unless-stopped
     environment:
       UPDATE_TOKEN: ${UPDATE_TOKEN}
-      COMPOSE_PROJECT_NAME: orange-probe
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-orange-probe}
       COMPOSE_FILE: /deployment/docker-compose.yml
       GITHUB_REPOSITORY: juzihensuan/Orange-Probe
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}

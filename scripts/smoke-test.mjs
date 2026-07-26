@@ -366,7 +366,11 @@ try {
   assert.match(oneCommandInstaller, /releases\/latest/);
   assert.match(oneCommandInstaller, /Orange-Probe-Docker-v\$version\.zip/);
   assert.match(oneCommandInstaller, /SHA256 verification failed/);
-  assert.match(oneCommandInstaller, /docker compose --project-name orange-probe build --pull/);
+  assert.match(oneCommandInstaller, /com\.docker\.compose\.project/);
+  assert.match(oneCommandInstaller, /data_mount="\.\/data"/);
+  assert.match(oneCommandInstaller, /current_update_token/);
+  assert.match(oneCommandInstaller, /rm -f "\$deploy_path\/README\.md"/);
+  assert.match(oneCommandInstaller, /docker compose --project-name "\$compose_project" build --pull/);
   assert.match(oneCommandInstaller, /failed its startup health check/);
   const serverUpdaterSource = fs.readFileSync(path.join(rootDir, "updater", "index.js"), "utf8");
   assert.match(serverUpdaterSource, /releases\/download\/v\$\{version\}/);

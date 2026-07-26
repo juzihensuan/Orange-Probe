@@ -100,6 +100,15 @@ sha256_file() {
 install_prerequisites
 install_docker
 
+compose_project="${COMPOSE_PROJECT_NAME:-}"
+if [ -z "$compose_project" ]; then
+  existing_project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' orange-probe 2>/dev/null || true)"
+  case "$existing_project" in
+    ""|*[!0-9A-Za-z_-]*) compose_project="orange-probe" ;;
+    *) compose_project="$existing_project" ;;
+  esac
+fi
+
 version="${ORANGE_PROBE_VERSION:-$(latest_release_version)}"
 case "$version" in
   ""|*[!0-9A-Za-z._-]*)
@@ -129,6 +138,17 @@ if [ ! -f "$source_path/docker-compose.yml" ] || [ ! -f "$source_path/package.js
 fi
 install -d -m 0750 "$deploy_path"
 cp -a "$source_path/." "$deploy_path/"
+chmod 0750 "$deploy_path"
+rm -f "$deploy_path/README.md"
+
+data_mount="${DATA_MOUNT:-}"
+if [ -z "$data_mount" ]; then
+  if [ -d "$deploy_path/data" ] && [ -n "$(find "$deploy_path/data" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+    data_mount="./data"
+  else
+    data_mount="orange-probe-data"
+  fi
+fi
 
 generated_password=""
 if [ ! -f "$deploy_path/.env" ]; then
@@ -145,6 +165,8 @@ TRUST_PROXY=loopback, linklocal, uniquelocal
 BIND_ADDRESS=${BIND_ADDRESS:-127.0.0.1}
 PUBLIC_PORT=${PUBLIC_PORT:-4174}
 DEPLOY_PATH=$deploy_path
+COMPOSE_PROJECT_NAME=$compose_project
+DATA_MOUNT=$data_mount
 ORANGE_PROBE_TAG=${ORANGE_PROBE_TAG:-latest}
 UPDATE_TOKEN=$(random_hex 32)
 GITHUB_TOKEN=${GITHUB_TOKEN:-}
@@ -164,9 +186,16 @@ ensure_env_value() {
 }
 
 ensure_env_value "DEPLOY_PATH" "$deploy_path"
+ensure_env_value "COMPOSE_PROJECT_NAME" "$compose_project"
+ensure_env_value "DATA_MOUNT" "$data_mount"
 ensure_env_value "ORANGE_PROBE_TAG" "${ORANGE_PROBE_TAG:-latest}"
 ensure_env_value "UPDATE_TOKEN" "$(random_hex 32)"
 ensure_env_value "GITHUB_TOKEN" "${GITHUB_TOKEN:-}"
+current_update_token="$(sed -n 's/^UPDATE_TOKEN=//p' "$deploy_path/.env" | tail -n 1)"
+if [ "${#current_update_token}" -lt 32 ] || [ "$current_update_token" = "replace-with-a-long-random-update-token" ]; then
+  replacement_update_token="$(random_hex 32)"
+  sed -i "s|^UPDATE_TOKEN=.*$|UPDATE_TOKEN=$replacement_update_token|" "$deploy_path/.env"
+fi
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   if grep -q '^GITHUB_TOKEN=' "$deploy_path/.env"; then
     sed -i "s|^GITHUB_TOKEN=.*$|GITHUB_TOKEN=$GITHUB_TOKEN|" "$deploy_path/.env"
@@ -180,8 +209,8 @@ published_port="$(sed -n 's/^PUBLIC_PORT=//p' "$deploy_path/.env" | tail -n 1)"
 published_port="${published_port:-4174}"
 
 cd "$deploy_path"
-docker compose --project-name orange-probe build --pull
-docker compose --project-name orange-probe up -d --no-build --remove-orphans
+docker compose --project-name "$compose_project" build --pull
+docker compose --project-name "$compose_project" up -d --no-build --remove-orphans
 
 echo "Waiting for Orange Probe..."
 healthy=false
@@ -194,8 +223,8 @@ for ((attempt = 1; attempt <= 60; attempt += 1)); do
 done
 if [ "$healthy" != "true" ]; then
   echo "Orange Probe failed its startup health check." >&2
-  docker compose --project-name orange-probe ps >&2 || true
-  docker compose --project-name orange-probe logs --tail=100 orange-probe orange-probe-updater >&2 || true
+  docker compose --project-name "$compose_project" ps >&2 || true
+  docker compose --project-name "$compose_project" logs --tail=100 orange-probe orange-probe-updater >&2 || true
   exit 1
 fi
 
@@ -203,6 +232,8 @@ echo "Orange Probe installation completed."
 echo "Installed version: $version"
 echo "Local URL: http://127.0.0.1:$published_port"
 echo "Deployment directory: $deploy_path"
+echo "Compose project: $compose_project"
+echo "Data mount: $data_mount"
 if [ -n "$generated_password" ]; then
   echo "Admin username: ${ADMIN_USERNAME:-admin}"
   echo "Admin password: $generated_password"
