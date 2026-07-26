@@ -1,0 +1,9 @@
+probe.example.com {
+    encode zstd gzip
+
+    reverse_proxy 127.0.0.1:4174
+
+    log {
+        output file /var/log/caddy/orange-probe-access.log
+    }
+}

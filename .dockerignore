@@ -1,0 +1,13 @@
+.git
+.agents
+.github-remote-audit
+.artifacts
+node_modules
+dist
+data
+release
+.release-staging
+*.log
+*.png
+*.tsbuildinfo
+.env

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+.github-remote-audit/
+.release-staging/
+.env
+data/admin-auth.json
+data/agent-token.key
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.artifacts/
+.DS_Store
+Thumbs.db

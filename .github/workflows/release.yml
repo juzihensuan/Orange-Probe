@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify application
+        run: |
+          npm run check
+          npm run test:smoke
+          npm run build
+          npm audit --omit=dev
+          bash -n agent/install-linux.sh
+          bash -n deploy/install.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/orange-probe
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build and push Orange Probe
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Updater metadata
+        id: updater-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/orange-probe-updater
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build and push updater
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: updater/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.updater-meta.outputs.tags }}
+          labels: ${{ steps.updater-meta.outputs.labels }}
+
+      - name: Package Docker release
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          root="orange-probe-docker-v${version}"
+          mkdir -p "release/${root}"
+          cp .dockerignore .env.example .gitignore docker-compose.yml Dockerfile index.html LICENSE package-lock.json package.json README.md "Telegram Bot.md" tsconfig.app.json tsconfig.json tsconfig.node.json vite.config.ts "release/${root}/"
+          cp -R .github agent deploy docs scripts server src updater "release/${root}/"
+          cd release
+          zip -qr "Orange-Probe-Docker-v${version}.zip" "${root}"
+          cp "${root}/deploy/install.sh" install-orange-probe.sh
+          sha256sum "Orange-Probe-Docker-v${version}.zip" install-orange-probe.sh > "Orange-Probe-v${version}.sha256"
+          rm -rf "${root}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/Orange-Probe-Docker-*.zip
+            release/install-orange-probe.sh
+            release/Orange-Probe-*.sha256
