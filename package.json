@@ -1,6 +1,6 @@
 {
   "name": "orange-probe",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "private": true,
   "type": "module",
   "description": "A lightweight real-time server monitoring dashboard and probe agent.",

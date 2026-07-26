@@ -1,8 +1,5 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
 import http from "node:http";
-import os from "node:os";
-import path from "node:path";
 import { spawn } from "node:child_process";
 
 const port = Number(process.env.UPDATER_PORT || 4180);
@@ -11,7 +8,6 @@ const composeFile = String(process.env.COMPOSE_FILE || "/deployment/docker-compo
 const projectName = String(process.env.COMPOSE_PROJECT_NAME || "orange-probe");
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubToken = String(process.env.GITHUB_TOKEN || "");
-const deploymentDir = path.dirname(composeFile);
 let updating = false;
 let lastUpdate = { status: "idle", startedAt: 0, completedAt: 0, error: "" };
 
@@ -68,45 +64,6 @@ async function resolveVersion(targetVersion) {
   return version;
 }
 
-async function downloadRelease(version, destination) {
-  const assetName = `Orange-Probe-Docker-v${version}.zip`;
-  const url = `https://github.com/${githubRepository}/releases/download/v${version}/${assetName}`;
-  const response = await fetch(url, { headers: githubHeaders("application/octet-stream") });
-  if (!response.ok) throw new Error(`Release package download failed (${response.status})`);
-  const archive = Buffer.from(await response.arrayBuffer());
-  if (archive.length < 100 || archive.length > 24 * 1024 * 1024) throw new Error("Release package size is invalid");
-  const checksumName = `Orange-Probe-v${version}.sha256`;
-  const checksumResponse = await fetch(
-    `https://github.com/${githubRepository}/releases/download/v${version}/${checksumName}`,
-    { headers: githubHeaders("application/octet-stream") },
-  );
-  if (!checksumResponse.ok) throw new Error(`Release checksum download failed (${checksumResponse.status})`);
-  const checksumText = await checksumResponse.text();
-  const checksumLine = checksumText.split(/\r?\n/).find((line) => line.trim().endsWith(` ${assetName}`));
-  const expectedHash = String(checksumLine || "").trim().split(/\s+/)[0];
-  const actualHash = crypto.createHash("sha256").update(archive).digest("hex");
-  if (!/^[a-f0-9]{64}$/i.test(expectedHash) || expectedHash.toLowerCase() !== actualHash) {
-    throw new Error("Release package SHA256 verification failed");
-  }
-  await fs.writeFile(destination, archive, { mode: 0o600 });
-}
-
-async function copyReleaseSource(sourceDir) {
-  for (const filename of ["package.json", "docker-compose.yml", "Dockerfile"]) {
-    const stat = await fs.stat(path.join(sourceDir, filename)).catch(() => null);
-    if (!stat?.isFile()) throw new Error(`Release package is missing ${filename}`);
-  }
-  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.name === ".env") continue;
-    await fs.cp(path.join(sourceDir, entry.name), path.join(deploymentDir, entry.name), {
-      recursive: true,
-      force: true,
-      errorOnExist: false,
-    });
-  }
-}
-
 async function configuredImages() {
   const argumentsList = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName, "config", "--format", "json"];
   const output = await runCommand("docker", argumentsList);
@@ -128,25 +85,24 @@ function versionedImage(image, version) {
 async function pullReleaseImages(images, version) {
   for (const configuredImage of [images.appImage, images.updaterImage]) {
     const releaseImage = versionedImage(configuredImage, version);
-    await runCommand("docker", ["pull", releaseImage]);
+    try {
+      await runCommand("docker", ["pull", releaseImage]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/unauthorized|denied|authentication required/i.test(message)) {
+        throw new Error(`Cannot pull ${releaseImage}: registry authorization failed. Make the GHCR package public or configure GITHUB_TOKEN with read:packages.`);
+      }
+      throw error;
+    }
     if (releaseImage !== configuredImage) await runCommand("docker", ["image", "tag", releaseImage, configuredImage]);
   }
 }
 
-async function buildReleaseImages(sourceDir, images) {
-  await runCommand("docker", ["build", "--pull", "--tag", images.appImage, "--file", path.join(sourceDir, "Dockerfile"), sourceDir]);
-  await runCommand("docker", ["build", "--pull", "--tag", images.updaterImage, "--file", path.join(sourceDir, "updater", "Dockerfile"), sourceDir]);
-}
-
-async function prepareReleaseImages(sourceDir, images, version) {
-  try {
-    await pullReleaseImages(images, version);
-    return "registry";
-  } catch (error) {
-    console.warn(`[${new Date().toISOString()}] Registry pull failed; building verified release source locally: ${error instanceof Error ? error.message : error}`);
-    await buildReleaseImages(sourceDir, images);
-    return "source";
-  }
+async function authenticateRegistry(images) {
+  if (!githubToken) return;
+  const registries = new Set([images.appImage, images.updaterImage].map((image) => String(image).split("/")[0]).filter(Boolean));
+  const username = githubRepository.split("/")[0] || "orange-probe";
+  for (const registry of registries) await runCommand("docker", ["login", registry, "--username", username, "--password-stdin"], githubToken);
 }
 
 async function scheduleUpdaterRecreate(updaterImage) {
@@ -161,27 +117,20 @@ async function scheduleUpdaterRecreate(updaterImage) {
 async function updateServer(targetVersion) {
   updating = true;
   lastUpdate = { status: "running", targetVersion, startedAt: Date.now(), completedAt: 0, error: "" };
-  let temporaryDir = "";
   try {
     const version = await resolveVersion(targetVersion);
-    temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "orange-probe-update-"));
-    const archivePath = path.join(temporaryDir, `Orange-Probe-Docker-v${version}.zip`);
-    const sourceDir = path.join(temporaryDir, `orange-probe-docker-v${version}`);
-    await downloadRelease(version, archivePath);
-    await runCommand("unzip", ["-q", archivePath, "-d", temporaryDir]);
     const images = await configuredImages();
-    const imageSource = await prepareReleaseImages(sourceDir, images, version);
-    await copyReleaseSource(sourceDir);
+    await authenticateRegistry(images);
+    await pullReleaseImages(images, version);
     const baseArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName];
     await runCommand("docker", [...baseArguments, "up", "-d", "--no-deps", "--no-build", "orange-probe"]);
     await scheduleUpdaterRecreate(images.updaterImage);
-    lastUpdate = { ...lastUpdate, targetVersion: version, imageSource, status: "completed", completedAt: Date.now(), error: "" };
+    lastUpdate = { ...lastUpdate, targetVersion: version, imageSource: "registry", status: "completed", completedAt: Date.now(), error: "" };
     console.log(`[${new Date().toISOString()}] Orange Probe server updated to ${version}`);
   } catch (error) {
     lastUpdate = { ...lastUpdate, status: "failed", completedAt: Date.now(), error: error instanceof Error ? error.message : String(error) };
     console.error(`[${new Date().toISOString()}] Orange Probe update failed: ${lastUpdate.error}`);
   } finally {
-    if (temporaryDir) await fs.rm(temporaryDir, { recursive: true, force: true }).catch(() => {});
     updating = false;
   }
 }
