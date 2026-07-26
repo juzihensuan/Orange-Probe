@@ -372,6 +372,10 @@ try {
   assert.match(serverUpdaterSource, /releases\/download\/v\$\{version\}/);
   assert.match(serverUpdaterSource, /createHash\("sha256"\)/);
   assert.match(serverUpdaterSource, /build", "--pull", "orange-probe/);
+  const dockerfileSource = fs.readFileSync(path.join(rootDir, "Dockerfile"), "utf8");
+  assert.match(dockerfileSource, /FROM --platform=\$BUILDPLATFORM node:22-alpine AS builder/);
+  assert.match(dockerfileSource, /COPY --from=builder \/app\/node_modules \.\/node_modules/);
+  assert.equal((dockerfileSource.match(/RUN npm ci/g) || []).length, 1);
   const { response: flagResponse, payload: flagAsset } = await request("/flags/us.svg", { authenticated: false });
   assert.match(String(flagResponse.headers.get("content-type")), /image\/svg\+xml/);
   assert.match(flagAsset.text, /<svg/);

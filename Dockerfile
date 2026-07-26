@@ -1,10 +1,10 @@
-FROM node:22-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+RUN npm run build && npm prune --omit=dev --ignore-scripts && npm cache clean --force
 
 FROM node:22-alpine AS runtime
 
@@ -13,7 +13,7 @@ WORKDIR /app
 ENV NODE_ENV=production PORT=4174 DATA_DIR=/app/data
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY server ./server
 COPY agent ./agent
