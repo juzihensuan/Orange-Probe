@@ -127,11 +127,13 @@ PROBE_WS_URL=wss://你的域名/agent-ws
 
 Orange Probe 会在同一 IP 连续登录失败 5 次后持久化封禁该地址。Nginx 示例已传递 `X-Real-IP` 和 `X-Forwarded-For`，Caddy 的 `reverse_proxy` 也会自动设置标准转发头。
 
-部署完成后进入后台“防火墙”页面，确认“当前访问 IP”显示的是管理员公网 IP，而不是 `127.0.0.1`、Docker 网关地址或反向代理容器 IP。
+应用仅在直接上游命中 `TRUST_PROXY` 时读取代理头：优先按可信链解析 `X-Forwarded-For`，缺少该头时再读取 `X-Real-IP`。否则一律使用直连地址，避免访客伪造请求头。部署完成后进入后台“防火墙”页面，确认“当前访问 IP”显示的是管理员公网 IP，并核对旁边的识别来源，而不是 `127.0.0.1`、Docker 网关地址或反向代理容器 IP。
 
-不要将 `TRUST_PROXY` 设置为无条件信任所有来源，也不要在 4174 端口公开可访问时信任任意 `X-Forwarded-For`。默认值只信任回环、链路本地和私网代理，适用于反代与应用在同一主机或 Docker 私网的部署。
+默认值 `loopback, linklocal, uniquelocal` 只信任回环、链路本地和私网代理，适用于反代与应用在同一主机或 Docker 私网的部署。额外的固定代理必须按真实 IP 或 CIDR 追加到 `.env`，例如 `TRUST_PROXY=loopback, linklocal, uniquelocal, 203.0.113.0/24`，然后重新创建容器。不要使用 `0.0.0.0/0`、`::/0`，也不要公开 4174 后再信任任意转发头。
 
-使用 CDN 时需要确保 CDN 覆盖客户端传入的转发头，并让 Nginx/Caddy 将 CDN 验证后的真实 IP 传给应用。否则防火墙可能看到 CDN 出口 IP。修改后应再次检查后台显示的当前访问 IP，再进行登录失败封禁测试。
+多级代理必须保证每一层都追加或重写正确的转发头，并且只把实际可信的代理地址加入 `TRUST_PROXY`。应用遇到第一个不可信的中间地址就会停止向前读取，这是防止伪造 IP 的必要边界。
+
+封禁规则在静态页面之前执行，同时覆盖主页、服务器详情、后台、API、Agent 下载、`/ws` 与 `/agent-ws`。HTML 响应带有禁止缓存头，避免旧页面绕过源站检查。
 
 ## 7. 验证清单
 
@@ -154,7 +156,7 @@ curl -I https://你的域名/downloads/agent/package.json
 
 WebSocket 返回 400/连接后立即断开：检查 Nginx 的 `proxy_http_version 1.1`、`Upgrade`、`Connection`、`Host` 请求头，检查后台填写的公开域名与浏览器访问域名完全一致。
 
-Agent WSS 超时：确认 `/agent-ws` 没有被 CDN 缓存，证书链有效，服务器和中间网关允许长连接。若使用 Cloudflare，DNS 记录需要启用 WebSocket 支持，且 SSL/TLS 模式应使用 Full (strict)。
+Agent WSS 超时：确认 `/agent-ws` 没有被上游缓存，证书链有效，服务器和中间网关允许长连接。
 
 后台 403：通常是反代传递的 `Host`/`X-Forwarded-Proto` 不正确，或浏览器 Origin 与后台公开域名不一致。不要随意扩大 `TRUST_PROXY` 到所有来源。
 

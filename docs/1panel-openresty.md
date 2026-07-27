@@ -193,12 +193,28 @@ PROBE_WS_URL=wss://probe.example.com/agent-ws
 
 ## 7. 验证真实 IP 与防火墙
 
-登录后台“防火墙”页面，检查“当前访问 IP”。这里必须显示管理员真实公网 IP，不能是：
+Orange Probe 会先检查与它直接建立连接的上游地址。只有这个地址命中 `TRUST_PROXY` 时，应用才会读取 `X-Forwarded-For`；没有该请求头时才回退到 `X-Real-IP`。来自非可信连接的同名请求头会被忽略，避免访客伪造 IP 绕过封禁。
+
+默认值为：
+
+```env
+TRUST_PROXY=loopback, linklocal, uniquelocal
+```
+
+这适用于 Orange Probe 与 OpenResty 位于同一主机或 Docker 私网的情况。`docker-compose.yml` 会读取 `.env` 中的该值。如果 OpenResty 前还有其他固定代理，按实际地址追加其 IP 或 CIDR，例如：
+
+```env
+TRUST_PROXY=loopback, linklocal, uniquelocal, 203.0.113.0/24, 2001:db8:1234::/48
+```
+
+只能加入你控制或确认可信的代理范围，禁止填写 `0.0.0.0/0`、`::/0` 或不受控的公网网段。修改后运行 `docker compose up -d --force-recreate orange-probe`。
+
+登录后台“防火墙”页面，检查“当前访问 IP”及括号内的识别来源。这里必须显示管理员真实公网 IP，不能是：
 
 - `127.0.0.1`
 - OpenResty 容器 IP
 - Docker 网关 IP
-- CDN 出口 IP
+- 上游代理出口 IP
 
 显示正确后，再使用一个不会影响自己的测试 IP 执行手动封禁。被封禁地址访问域名时应看到：
 
@@ -208,7 +224,9 @@ PROBE_WS_URL=wss://probe.example.com/agent-ws
 
 页面还会显示访问者 IP。
 
-如果真实 IP 不正确，不要测试五次错误登录，否则可能封禁代理地址，导致所有访问者一起被拦截。标准 1Panel OpenResty 直连部署使用上面的 `X-Forwarded-For` 配置即可；通过 Cloudflare 或其他 CDN 时，还需要让 OpenResty 只信任 CDN 官方 IP 段并解析其真实 IP 请求头。
+如果真实 IP 不正确，不要测试五次错误登录，否则可能封禁代理地址，导致所有访问者一起被拦截。先确认 `/`、`/ws` 和 `/agent-ws` 三个反代块都设置了相同的 `X-Real-IP` 与 `X-Forwarded-For`，再核对 `TRUST_PROXY` 是否只包含实际代理链。
+
+封禁生效后，该 IP 对主页、服务器详情、后台、API、Agent 下载以及两个 WebSocket 入口的访问都会返回 403。HTML 页面会直接显示封禁提示和识别出的访问者 IP。
 
 ## 8. 常见问题
 
@@ -237,7 +255,7 @@ proxy_set_header Connection "upgrade";
 
 ### Agent 无法 WSS 上线
 
-检查 `/agent-ws` 是否使用完全相同的 WebSocket 请求头，并确认后台公开域名是 HTTPS。证书链错误、CDN 缓存 `/agent-ws`、OpenResty 超时过短都会导致连接失败。
+检查 `/agent-ws` 是否使用完全相同的 WebSocket 请求头，并确认后台公开域名是 HTTPS。证书链错误、上游缓存 `/agent-ws`、OpenResty 超时过短都会导致连接失败。
 
 ### 错误封禁了自己的 IP
 

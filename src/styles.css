@@ -683,6 +683,22 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .drawer-actions.read-only { justify-content: flex-end; }
 
 /* Admin authentication */
+.ufw-blocked-body { min-height: 100vh; margin: 0; background: #f4f5f7; }
+.ufw-blocked-page { display: grid; min-height: 100vh; place-items: center; padding: 24px; font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; }
+.ufw-blocked-panel { width: min(100%, 460px); border: 1px solid #dfe3e8; border-radius: 14px; background: #fff; padding: 34px; box-shadow: 0 18px 55px rgba(23, 31, 42, .12); }
+.ufw-blocked-label { display: inline-flex; min-height: 31px; align-items: center; border-radius: 7px; background: #fff0ec; padding: 0 11px; color: #d84b24; font-size: 12px; font-weight: 760; }
+.ufw-blocked-panel h1 { margin: 22px 0 24px; color: #18202a; font-size: 24px; font-weight: 760; letter-spacing: 0; }
+.ufw-blocked-address { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 20px; border-top: 1px solid #edf0f2; padding-top: 18px; }
+.ufw-blocked-address span { color: #818a95; font-size: 12px; }
+.ufw-blocked-address code { overflow-wrap: anywhere; color: #18202a; font-family: Consolas, monospace; font-size: 13px; font-weight: 720; text-align: right; }
+@media (prefers-color-scheme: dark) {
+  .ufw-blocked-body { background: #11161c; }
+  .ufw-blocked-panel { border-color: #303841; background: #1a2027; box-shadow: none; }
+  .ufw-blocked-label { background: #3a241f; color: #ff8a68; }
+  .ufw-blocked-panel h1, .ufw-blocked-address code { color: #edf2f7; }
+  .ufw-blocked-address { border-color: #303841; }
+  .ufw-blocked-address span { color: #9ea8b3; }
+}
 .admin-auth-loading { display: flex; min-height: 100vh; align-items: center; justify-content: center; gap: 10px; color: var(--text-muted); font-size: 11px; }
 .admin-login-page { position: relative; display: grid; min-height: 100vh; place-items: center; background: var(--bg); padding: 60px 18px 30px; }
 .admin-back-home { position: absolute; top: 24px; left: 28px; display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 10px; text-decoration: none; }

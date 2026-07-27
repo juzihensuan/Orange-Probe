@@ -11,8 +11,16 @@ interface FirewallEntry {
 
 interface FirewallPayload {
   currentIp: string;
+  currentIpSource: "socket" | "x-forwarded-for" | "x-real-ip" | "unavailable";
   blocked: FirewallEntry[];
 }
+
+const ipSourceLabels: Record<FirewallPayload["currentIpSource"], string> = {
+  socket: "直连地址",
+  "x-forwarded-for": "可信代理链",
+  "x-real-ip": "可信代理地址",
+  unavailable: "无法识别",
+};
 
 function blockedTime(timestamp: number) {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -27,7 +35,7 @@ function blockedTime(timestamp: number) {
 }
 
 export default function FirewallManagement({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [payload, setPayload] = useState<FirewallPayload>({ currentIp: "", blocked: [] });
+  const [payload, setPayload] = useState<FirewallPayload>({ currentIp: "", currentIpSource: "unavailable", blocked: [] });
   const [ip, setIp] = useState("");
   const [reason, setReason] = useState("");
   const [loading, setLoading] = useState(true);
@@ -98,7 +106,7 @@ export default function FirewallManagement({ onUnauthorized }: { onUnauthorized:
     <div className="page-stack firewall-page">
       <section className="management-summary firewall-summary">
         <span><ShieldBan size={20} /></span>
-        <div><b>{payload.blocked.length} 个封禁 IP</b><small>自动封禁 {automaticCount} 个 · 手动封禁 {payload.blocked.length - automaticCount} 个 · 当前访问 IP {payload.currentIp || "--"}</small></div>
+        <div><b>{payload.blocked.length} 个封禁 IP</b><small>自动封禁 {automaticCount} 个 · 手动封禁 {payload.blocked.length - automaticCount} 个 · 当前访问 IP {payload.currentIp || "--"}（{ipSourceLabels[payload.currentIpSource] || "无法识别"}）</small></div>
         <button className="secondary-button" onClick={load} disabled={loading}>{loading ? <RefreshCw className="spin" size={14} /> : <RefreshCw size={14} />}刷新</button>
       </section>
 

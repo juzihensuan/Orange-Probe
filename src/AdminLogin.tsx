@@ -1,5 +1,6 @@
 import { Activity, ArrowLeft, Eye, EyeOff, LoaderCircle, LockKeyhole, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
+import { showFirewallBlockedPage } from "./firewall";
 
 export interface AdminSession {
   authenticated: true;
@@ -26,13 +27,14 @@ export default function AdminLogin({ onLogin }: { onLogin: (session: AdminSessio
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
-      const payload = await response.json().catch(() => ({})) as Partial<AdminSession> & { error?: string; blocked?: boolean };
+      const payload = await response.json().catch(() => ({})) as Partial<AdminSession> & { error?: string; blocked?: boolean; ip?: string; remainingAttempts?: number };
       if (!response.ok) {
         if (payload.blocked) {
-          window.location.reload();
+          showFirewallBlockedPage(payload.ip);
           return;
         }
-        throw new Error(payload.error === "Invalid username or password" ? "用户名或密码错误，连续失败 5 次将封禁当前 IP" : payload.error || "登录失败");
+        const remainingAttempts = Math.max(0, Math.min(4, Number(payload.remainingAttempts) || 0));
+        throw new Error(payload.error === "Invalid username or password" ? `用户名或密码错误，剩余 ${remainingAttempts} 次尝试机会` : payload.error || "登录失败");
       }
       onLogin(payload as AdminSession);
     } catch (loginError) {

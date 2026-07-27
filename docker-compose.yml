@@ -12,7 +12,7 @@ services:
       NODE_ENV: production
       PORT: 4174
       DATA_DIR: /app/data
-      TRUST_PROXY: loopback, linklocal, uniquelocal
+      TRUST_PROXY: "${TRUST_PROXY:-loopback, linklocal, uniquelocal}"
       GITHUB_REPOSITORY: juzihensuan/Orange-Probe
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       UPDATER_URL: http://orange-probe-updater:4180

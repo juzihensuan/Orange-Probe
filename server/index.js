@@ -11,7 +11,7 @@ import { WebSocketServer } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const appVersion = "1.2.0";
+const appVersion = "1.2.1";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const githubToken = String(process.env.GITHUB_TOKEN || "");
@@ -359,12 +359,43 @@ function normalizeIp(value) {
   return "";
 }
 
-function requestIp(request) {
+function trustProxyFunction() {
+  const trust = app.get("trust proxy fn");
+  return typeof trust === "function" ? trust : () => false;
+}
+
+function directProxyTrusted(request) {
+  const socketIp = normalizeIp(request.socket?.remoteAddress);
+  if (!socketIp) return false;
   try {
-    return normalizeIp(proxyaddr(request, app.get("trust proxy fn"))) || normalizeIp(request.socket?.remoteAddress);
+    return Boolean(trustProxyFunction()(socketIp, 0));
   } catch {
-    return normalizeIp(request.socket?.remoteAddress);
+    return false;
   }
+}
+
+function requestIpInfo(request) {
+  const socketIp = normalizeIp(request.socket?.remoteAddress);
+  if (!socketIp) return { ip: "", source: "unavailable" };
+  const trust = trustProxyFunction();
+  if (!directProxyTrusted(request)) return { ip: socketIp, source: "socket" };
+
+  if (String(request.headers["x-forwarded-for"] || "").trim()) {
+    try {
+      const ip = normalizeIp(proxyaddr(request, trust));
+      if (ip) return { ip, source: ip === socketIp ? "socket" : "x-forwarded-for" };
+    } catch {
+      // Fall through to the single-value proxy header and socket address.
+    }
+  }
+
+  const realIp = normalizeIp(request.headers["x-real-ip"]);
+  if (realIp) return { ip: realIp, source: "x-real-ip" };
+  return { ip: socketIp, source: "socket" };
+}
+
+function requestIp(request) {
+  return requestIpInfo(request).ip;
 }
 
 function loadFirewallEntries() {
@@ -415,20 +446,19 @@ function firewallBlockedPage(ip) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="robots" content="noindex,nofollow" />
-  <title>访问已被禁止 · Orange Probe</title>
+  <title>UFW 提示</title>
   <style>
-    :root{color-scheme:light dark;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;background:#f4f6f8;color:#18202a}
-    *{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;background:#f4f6f8}
-    main{width:min(100%,520px);border:1px solid #e0e4e8;border-radius:16px;background:#fff;padding:34px;box-shadow:0 18px 55px rgba(20,28,36,.12)}
-    .code{display:inline-flex;min-height:34px;align-items:center;border-radius:8px;background:#fff0ec;padding:0 11px;color:#d84b24;font-size:13px;font-weight:750}
-    h1{margin:20px 0 9px;font-size:23px;letter-spacing:0}p{margin:0;color:#68717d;font-size:13px;line-height:1.7}
-    dl{margin:25px 0 0;border-top:1px solid #edf0f2;padding-top:18px}div{display:flex;align-items:center;justify-content:space-between;gap:18px}
-    dt{color:#8a929c;font-size:12px}dd{overflow-wrap:anywhere;margin:0;color:#18202a;font-family:Consolas,monospace;font-size:13px;font-weight:700;text-align:right}
-    small{display:block;margin-top:24px;color:#a0a7af;font-size:11px}
-    @media(prefers-color-scheme:dark){:root,body{background:#11161c;color:#edf2f7}main{border-color:#303841;background:#1a2027;box-shadow:none}.code{background:#3a241f;color:#ff8a68}p,dt{color:#9ea8b3}dl{border-color:#303841}dd{color:#edf2f7}small{color:#707b86}}
+    :root{color-scheme:light dark;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;background:#f4f5f7;color:#18202a}
+    *{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;background:#f4f5f7}
+    main{width:min(100%,460px);border:1px solid #dfe3e8;border-radius:14px;background:#fff;padding:34px;box-shadow:0 18px 55px rgba(23,31,42,.12)}
+    .label{display:inline-flex;min-height:31px;align-items:center;border-radius:7px;background:#fff0ec;padding:0 11px;color:#d84b24;font-size:12px;font-weight:760}
+    h1{margin:22px 0 24px;font-size:24px;font-weight:760;letter-spacing:0}
+    dl{margin:0;border-top:1px solid #edf0f2;padding-top:18px}div{display:flex;min-height:30px;align-items:center;justify-content:space-between;gap:20px}
+    dt{color:#818a95;font-size:12px}dd{overflow-wrap:anywhere;margin:0;color:#18202a;font-family:Consolas,monospace;font-size:13px;font-weight:720;text-align:right}
+    @media(prefers-color-scheme:dark){:root,body{background:#11161c;color:#edf2f7}main{border-color:#303841;background:#1a2027;box-shadow:none}.label{background:#3a241f;color:#ff8a68}dl{border-color:#303841}dt{color:#9ea8b3}dd{color:#edf2f7}}
   </style>
 </head>
-<body><main><span class="code">403 · ACCESS BLOCKED</span><h1>你的 IP 已被封禁，禁止访问！</h1><p>该地址已被 Orange Probe 防火墙拦截。如需恢复访问，请联系系统管理员解除封禁。</p><dl><div><dt>访问者 IP</dt><dd>${safeIp}</dd></div></dl><small>Orange Probe Firewall</small></main></body>
+<body><main><span class="label">UFW 提示</span><h1>你的 IP 已被封禁</h1><dl><div><dt>IP</dt><dd>${safeIp}</dd></div></dl></main></body>
 </html>`;
 }
 
@@ -439,19 +469,30 @@ app.use((request, response, next) => {
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
   response.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:");
   if (request.secure) response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  const acceptsHtml = String(request.headers.accept || "").includes("text/html");
+  if (request.path.startsWith("/api/") || (new Set(["GET", "HEAD"]).has(request.method) && acceptsHtml)) {
+    response.setHeader("Cache-Control", "private, no-store");
+    response.setHeader("CDN-Cache-Control", "no-store");
+    response.setHeader("Surrogate-Control", "no-store");
+  }
   next();
 });
 
 app.use((request, response, next) => {
-  const ip = requestIp(request);
+  const client = requestIpInfo(request);
+  const { ip } = client;
   request.clientIp = ip;
+  request.clientIpSource = client.source;
   if (!ip || !firewallEntries.has(ip)) return next();
-  response.status(403).setHeader("Cache-Control", "no-store");
+  response.status(403);
+  response.setHeader("Cache-Control", "private, no-store");
+  response.setHeader("CDN-Cache-Control", "no-store");
+  response.setHeader("Surrogate-Control", "no-store");
   if (request.method === "GET" && String(request.headers.accept || "").includes("text/html")) {
     response.setHeader("Content-Language", "zh-CN");
     return response.type("html").send(firewallBlockedPage(ip));
   }
-  return response.json({ error: "你的 IP 已被封禁，禁止访问！", blocked: true, ip });
+  return response.json({ error: "你的 IP 已被封禁", blocked: true, ip });
 });
 app.use(express.json({ limit: "128kb" }));
 
@@ -508,8 +549,17 @@ function requestOriginAllowed(request) {
   if (!origin) return true;
   try {
     const parsed = new URL(origin);
-    const requestHost = String(request.headers.host || "").toLowerCase();
-    if (parsed.host.toLowerCase() === requestHost) return true;
+    const originHost = parsed.host.toLowerCase();
+    const requestHosts = [String(request.headers.host || "").trim().toLowerCase()];
+    if (directProxyTrusted(request)) {
+      const forwardedHost = String(request.headers["x-forwarded-host"] || "")
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean)
+        .at(-1);
+      if (forwardedHost) requestHosts.push(forwardedHost);
+    }
+    if (requestHosts.includes(originHost)) return true;
     return Boolean(adminSettings.reverseProxyEnabled && adminSettings.publicDomain && parsed.origin === adminSettings.publicDomain);
   } catch {
     return false;
@@ -1594,7 +1644,7 @@ app.post("/api/admin/login", (req, res) => {
     const failedAttempts = current.count + 1;
     if (key && failedAttempts >= 5) {
       const entry = blockIp(key, { reason: "后台登录连续失败 5 次", source: "automatic", failedAttempts });
-      return res.status(403).json({ error: "你的 IP 已被封禁，禁止访问！", blocked: true, ip: entry.ip });
+      return res.status(403).json({ error: "你的 IP 已被封禁", blocked: true, ip: entry.ip, remainingAttempts: 0 });
     }
     if (key) loginAttempts.set(key, { ...current, count: failedAttempts });
     return res.status(401).json({ error: "Invalid username or password", remainingAttempts: Math.max(0, 5 - failedAttempts) });
@@ -1637,6 +1687,7 @@ app.put("/api/admin/settings", requireAdmin, (req, res) => {
 app.get("/api/admin/firewall", requireAdmin, (req, res) => {
   return res.json({
     currentIp: req.clientIp || requestIp(req),
+    currentIpSource: req.clientIpSource || requestIpInfo(req).source,
     blocked: [...firewallEntries.values()].sort((a, b) => b.blockedAt - a.blockedAt),
   });
 });
@@ -2141,9 +2192,9 @@ app.post("/api/servers/:id/ping", requireAdmin, async (req, res) => {
 });
 
 server.on("upgrade", (request, socket, head) => {
-  const clientIp = requestIp(request);
+  const { ip: clientIp } = requestIpInfo(request);
   if (clientIp && firewallEntries.has(clientIp)) {
-    const body = JSON.stringify({ error: "你的 IP 已被封禁，禁止访问！", blocked: true, ip: clientIp });
+    const body = JSON.stringify({ error: "你的 IP 已被封禁", blocked: true, ip: clientIp });
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
     return;
   }
@@ -2261,6 +2312,9 @@ if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
   app.use((req, res, next) => {
     if (req.method !== "GET" || req.path.startsWith("/api")) return next();
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("CDN-Cache-Control", "no-store");
+    res.setHeader("Surrogate-Control", "no-store");
     return res.sendFile(path.join(distDir, "index.html"));
   });
 }

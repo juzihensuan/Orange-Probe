@@ -17,9 +17,9 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     proxy: {
-      "/api": "http://localhost:4174",
-      "/ws": { target: "ws://localhost:4174", ws: true },
-      "/agent-ws": { target: "ws://localhost:4174", ws: true },
+      "/api": { target: "http://localhost:4174", xfwd: true },
+      "/ws": { target: "ws://localhost:4174", ws: true, xfwd: true },
+      "/agent-ws": { target: "ws://localhost:4174", ws: true, xfwd: true },
     },
   },
 });
