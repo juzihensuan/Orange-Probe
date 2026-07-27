@@ -120,9 +120,7 @@ function ServerEditor({ server, onClose, onSaved }: ServerEditorProps) {
 }
 
 function DeleteAgentModal({ server, deleting, error, onClose, onConfirm }: { server: ServerMetric; deleting: boolean; error: string; onClose: () => void; onConfirm: () => void }) {
-  const description = server.source === "local"
-    ? "将停止管理端内置采集，并删除节点配置、安装命令、流量记录和历史采样。删除状态会持久保存，节点不会被采集任务自动创建回来。"
-    : "将同时删除节点配置、安装命令、流量记录和历史采样。原 TOKEN 随即失效，后续需要重新添加 Agent。";
+  const description = "将同时删除节点配置、安装命令、流量记录和历史采样。原 TOKEN 随即失效，后续需要重新添加 Agent。";
   return <div className="modal-layer manage-modal-layer" role="dialog" aria-modal="true" aria-label={`删除 ${server.name}`}><button className="modal-scrim" onClick={deleting ? undefined : onClose} aria-label="关闭" /><div className="manage-modal confirm-modal danger-confirm-modal"><div className="manage-modal-head"><span><AlertTriangle size={19} /></span><div><h2>删除节点</h2><p>{server.name} · {server.id}</p></div><button onClick={onClose} disabled={deleting} title="关闭"><X size={18} /></button></div><div className="confirm-modal-body"><div className="confirm-warning-icon"><Trash2 size={24} /></div><span><b>确定删除“{server.name}”吗？</b><p>{description}</p></span></div>{error && <p className="manage-error confirm-error">{error}</p>}<div className="manage-modal-actions"><button className="secondary-button" onClick={onClose} disabled={deleting}>取消</button><button className="danger-button" onClick={onConfirm} disabled={deleting}>{deleting ? <RefreshCw className="spin" size={15} /> : <Trash2 size={15} />}确认删除</button></div></div></div>;
 }
 

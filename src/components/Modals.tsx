@@ -235,7 +235,7 @@ export function NodeDrawer({ server, onClose, readOnly = false }: { server: Serv
                 <dl className="system-info">
                   <div><dt>操作系统</dt><dd>{server.os}</dd></div><div><dt>架构</dt><dd>{server.arch}</dd></div>
                   <div><dt>处理器</dt><dd>{server.cpuModel}</dd></div><div><dt>核心数</dt><dd>{server.cpuCores} Cores</dd></div>
-                  <div><dt>Agent</dt><dd>v{server.version}</dd></div><div><dt>来源</dt><dd>{server.source === "local" ? "管理端本机" : "远程 Agent"}</dd></div>
+                  <div><dt>Agent</dt><dd>v{server.version}</dd></div><div><dt>来源</dt><dd>Agent 上报</dd></div>
                 </dl>
               </section>
             </>

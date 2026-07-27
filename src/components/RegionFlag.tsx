@@ -17,6 +17,5 @@ function regionCountryCode(location: string, suppliedCode = "") {
 
 export default function RegionFlag({ location, countryCode = "", className = "" }: { location: string; countryCode?: string; className?: string }) {
   const code = regionCountryCode(location, countryCode);
-  const fallback = location.trim().toLowerCase().includes("local") ? "local" : "generic";
-  return <span className={`region-flag ${code ? "flag-image" : `flag-${fallback}`}${className ? ` ${className}` : ""}`} aria-label={location} title={location} role="img">{code ? <img src={`/flags/${code}.svg`} alt="" /> : <i />}</span>;
+  return <span className={`region-flag ${code ? "flag-image" : "flag-generic"}${className ? ` ${className}` : ""}`} aria-label={location} title={location} role="img">{code ? <img src={`/flags/${code}.svg`} alt="" /> : <i />}</span>;
 }

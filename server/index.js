@@ -3,17 +3,15 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import proxyaddr from "proxy-addr";
 import { WebSocketServer } from "ws";
-import { resolveRegion } from "../agent/region.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const appVersion = "1.1.9";
+const appVersion = "1.2.0";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const githubToken = String(process.env.GITHUB_TOKEN || "");
@@ -61,7 +59,6 @@ const history = new Map();
 const adminSessions = new Map();
 const loginAttempts = new Map();
 const serviceHistories = new Map();
-const serviceLastRuns = new Map();
 const notificationAttempts = new Map();
 const pendingTelegramNotifications = new Map();
 const alertStates = { initialized: false, offline: new Map(), load: new Map(), traffic: new Map() };
@@ -196,19 +193,27 @@ if (updateState.server.targetVersion && compareVersions(appVersion, updateState.
   writeJson(updatesFile, updateState);
 }
 let trafficTotalsDirty = false;
-let removedLegacyDdns = false;
+let serverConfigsMigrated = false;
 for (const config of Object.values(serverConfigs)) {
   if (!config || typeof config !== "object") continue;
   if ("enableDdns" in config) {
     delete config.enableDdns;
-    removedLegacyDdns = true;
+    serverConfigsMigrated = true;
   }
   if ("ddnsProfiles" in config) {
     delete config.ddnsProfiles;
-    removedLegacyDdns = true;
+    serverConfigsMigrated = true;
+  }
+  if ("localCollectorDisabled" in config) {
+    delete config.localCollectorDisabled;
+    serverConfigsMigrated = true;
+  }
+  if ("deletedLocalNode" in config) {
+    delete config.deletedLocalNode;
+    serverConfigsMigrated = true;
   }
 }
-if (removedLegacyDdns) writeJson(serverConfigsFile, serverConfigs);
+if (serverConfigsMigrated) writeJson(serverConfigsFile, serverConfigs);
 
 function saveUpdateState() {
   writeJson(updatesFile, updateState);
@@ -607,8 +612,6 @@ function sanitizeServerConfig(value, current = {}) {
     ...(current.agentTokenHint ? { agentTokenHint: current.agentTokenHint } : {}),
     ...(current.agentTokenCiphertext ? { agentTokenCiphertext: current.agentTokenCiphertext } : {}),
     ...(current.agentRegisteredAt ? { agentRegisteredAt: current.agentRegisteredAt } : {}),
-    ...(current.localCollectorDisabled ? { localCollectorDisabled: true } : {}),
-    ...(current.deletedLocalNode ? { deletedLocalNode: true } : {}),
     updatedAt: Date.now(),
   };
 }
@@ -1131,8 +1134,68 @@ function removePersistedHistory(directory, keyField, keyValue) {
         return false;
       }
     });
-    fs.writeFileSync(file, retained.length ? `${retained.join("\n")}\n` : "", "utf8");
+    if (retained.length) fs.writeFileSync(file, `${retained.join("\n")}\n`, "utf8");
+    else fs.unlinkSync(file);
   }
+}
+
+function removeServiceHistoryForServer(serverId) {
+  for (const [serviceId, points] of serviceHistories) {
+    const retained = points.filter((point) => point.serverId !== serverId);
+    if (retained.length) serviceHistories.set(serviceId, retained);
+    else serviceHistories.delete(serviceId);
+  }
+  removePersistedHistory(serviceHistoryDir, "serverId", serverId);
+}
+
+function legacyLocalCollectorIds() {
+  const ids = new Set();
+  const consider = (value) => {
+    const id = String(value || "");
+    if (id.startsWith("local-") && !serverConfigs[id]?.agentTokenHash) ids.add(id);
+  };
+  for (const collection of [serverConfigs, availabilityHistory, trafficTotals, updateState.agents]) {
+    for (const id of Object.keys(collection || {})) consider(id);
+  }
+  for (const service of services) for (const id of service.serverIds || []) consider(id);
+  for (const directory of [nodeHistoryDir, serviceHistoryDir]) {
+    if (!fs.existsSync(directory)) continue;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      for (const line of fs.readFileSync(path.join(directory, entry.name), "utf8").split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          consider(JSON.parse(line).serverId);
+        } catch {
+          // Invalid history rows are handled by the normal history cleanup.
+        }
+      }
+    }
+  }
+  return ids;
+}
+
+function removeLegacyLocalCollectorState() {
+  const legacyIds = legacyLocalCollectorIds();
+  if (!legacyIds.size) return;
+  for (const id of legacyIds) {
+    delete serverConfigs[id];
+    delete availabilityHistory[id];
+    delete trafficTotals[id];
+    delete updateState.agents[id];
+    removePersistedHistory(nodeHistoryDir, "serverId", id);
+    removeServiceHistoryForServer(id);
+  }
+  services = services.map((service) => ({ ...service, serverIds: service.serverIds.filter((id) => !legacyIds.has(id)) }));
+  notificationState.renewals ||= {};
+  for (const key of Object.keys(notificationState.renewals)) if ([...legacyIds].some((id) => key.startsWith(`${id}:`))) delete notificationState.renewals[key];
+  writeJson(serverConfigsFile, serverConfigs);
+  writeJson(availabilityFile, availabilityHistory);
+  writeJson(trafficTotalsFile, trafficTotals);
+  writeJson(servicesFile, services);
+  writeJson(notificationStateFile, notificationState);
+  saveUpdateState();
+  console.log(`Removed ${legacyIds.size} legacy local collector node(s)`);
 }
 
 function recordAvailabilitySample() {
@@ -1438,321 +1501,6 @@ function broadcast() {
   }
 }
 
-let hostInfo;
-let previousCpuTimes;
-const automaticLocalRegion = String(process.env.PROBE_AUTO_REGION || "true").toLowerCase() !== "false";
-const configuredLocalRegion = String(process.env.PROBE_REGION || "").trim();
-let localRegionInfo = { countryCode: "", location: configuredLocalRegion || "Local" };
-
-function getNetworkAdapters() {
-  return Object.entries(os.networkInterfaces())
-    .map(([name, addresses]) => {
-      const active = (addresses || []).filter((item) => !item.internal);
-      if (!active.length) return null;
-      const mac = active.find((item) => item.mac && item.mac !== "00:00:00:00:00:00")?.mac || "";
-      return { name, mac, addresses: active.map((item) => item.address).slice(0, 16) };
-    })
-    .filter(Boolean)
-    .slice(0, 64);
-}
-
-function getHostInfo() {
-  if (hostInfo) return hostInfo;
-  const cpu = os.cpus()[0] || { model: "Unknown CPU" };
-  const interfaces = Object.values(os.networkInterfaces()).flat().filter(Boolean);
-  const address = interfaces.find((item) => item.family === "IPv4" && !item.internal)?.address || "127.0.0.1";
-  hostInfo = {
-    id: `local-${hashId(os.hostname())}`,
-    name: process.env.PROBE_NAME || os.hostname(),
-    ...localRegionInfo,
-    ip: address,
-    os: `${os.type()} ${os.release()}`,
-    arch: os.arch(),
-    cpuModel: cpu.model || "Unknown CPU",
-    cpuCores: os.cpus().length,
-    version: appVersion,
-    tags: ["local", "monitor"],
-    source: "local",
-  };
-  return hostInfo;
-}
-
-async function refreshLocalRegion() {
-  const detected = await resolveRegion({ automatic: automaticLocalRegion, fallback: configuredLocalRegion });
-  if (automaticLocalRegion && !detected.countryCode && localRegionInfo.countryCode) return;
-  localRegionInfo = detected;
-  if (!hostInfo) return;
-  Object.assign(hostInfo, localRegionInfo);
-  const node = nodes.get(hostInfo.id);
-  if (node?.source === "local") nodes.set(hostInfo.id, { ...node, ...localRegionInfo });
-  broadcast();
-}
-
-function getCpuUsage() {
-  const current = os.cpus().map((cpu) => ({
-    idle: cpu.times.idle,
-    total: Object.values(cpu.times).reduce((sum, value) => sum + value, 0),
-  }));
-  if (!previousCpuTimes) {
-    previousCpuTimes = current;
-    return { total: 0, cores: current.map(() => 0) };
-  }
-  const cores = current.map((item, index) => {
-    const previous = previousCpuTimes[index] || item;
-    const idleDelta = item.idle - previous.idle;
-    const totalDelta = item.total - previous.total;
-    return totalDelta > 0 ? (1 - idleDelta / totalDelta) * 100 : 0;
-  });
-  const currentTotal = current.reduce((result, item) => ({ idle: result.idle + item.idle, total: result.total + item.total }), { idle: 0, total: 0 });
-  const previousTotal = previousCpuTimes.reduce((result, item) => ({ idle: result.idle + item.idle, total: result.total + item.total }), { idle: 0, total: 0 });
-  const idleDelta = currentTotal.idle - previousTotal.idle;
-  const totalDelta = currentTotal.total - previousTotal.total;
-  previousCpuTimes = current;
-  return { total: totalDelta > 0 ? (1 - idleDelta / totalDelta) * 100 : 0, cores };
-}
-
-let diskRootsCache = [];
-let diskRootsUpdatedAt = 0;
-
-function getDiskRoots() {
-  if (diskRootsCache.length && Date.now() - diskRootsUpdatedAt < 5 * 60_000) return diskRootsCache;
-  if (process.platform === "win32") {
-    diskRootsCache = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")
-      .map((letter) => ({ name: `${letter}:`, mount: `${letter}:\\` }))
-      .filter((item) => fs.existsSync(item.mount));
-  } else if (process.platform === "linux") {
-    const virtualFileSystems = new Set(["proc", "sysfs", "tmpfs", "devtmpfs", "devpts", "cgroup", "cgroup2", "pstore", "securityfs", "debugfs", "tracefs", "configfs", "fusectl", "mqueue", "hugetlbfs", "ramfs", "autofs"]);
-    try {
-      const seen = new Set();
-      diskRootsCache = fs.readFileSync("/proc/self/mounts", "utf8").split(/\r?\n/).flatMap((line) => {
-        const [device, mountValue, fileSystem] = line.split(/\s+/);
-        const mount = String(mountValue || "").replace(/\\040/g, " ");
-        if (!device || !mount || virtualFileSystems.has(fileSystem) || seen.has(device)) return [];
-        if (["/proc", "/sys", "/dev", "/run"].some((prefix) => mount === prefix || mount.startsWith(`${prefix}/`))) return [];
-        seen.add(device);
-        return [{ name: device, mount }];
-      });
-    } catch {
-      diskRootsCache = [];
-    }
-  }
-  if (!diskRootsCache.length) diskRootsCache = [{ name: path.parse(process.cwd()).root || "/", mount: path.parse(process.cwd()).root || "/" }];
-  diskRootsUpdatedAt = Date.now();
-  return diskRootsCache.slice(0, 64);
-}
-
-function getDiskMetrics() {
-  const disks = getDiskRoots().flatMap((item) => {
-    try {
-      const stats = fs.statfsSync(item.mount);
-      const total = Number(stats.bsize) * Number(stats.blocks);
-      const available = Number(stats.bsize) * Number(stats.bavail);
-      const used = Math.max(0, total - available);
-      return [{ ...item, total, used, percent: total ? round(used / total * 100) : 0 }];
-    } catch {
-      return [];
-    }
-  });
-  return {
-    disks,
-    total: disks.reduce((sum, item) => sum + item.total, 0),
-    used: disks.reduce((sum, item) => sum + item.used, 0),
-  };
-}
-
-function execText(file, args) {
-  return new Promise((resolve) => {
-    execFile(file, args, { timeout: 3000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => resolve(error ? "" : String(stdout)));
-  });
-}
-
-function linuxSwapUsage() {
-  try {
-    const values = Object.fromEntries(fs.readFileSync("/proc/meminfo", "utf8")
-      .split(/\r?\n/)
-      .map((line) => line.match(/^(SwapTotal|SwapFree):\s+(\d+)\s+kB$/))
-      .filter(Boolean)
-      .map((match) => [match[1], Number(match[2]) * 1024]));
-    const total = Math.max(0, values.SwapTotal || 0);
-    return { total, used: Math.max(0, total - (values.SwapFree || 0)) };
-  } catch {
-    return { total: 0, used: 0 };
-  }
-}
-
-let windowsSwapCache = { used: 0, total: 0 };
-let windowsSwapUpdatedAt = 0;
-function windowsSwapUsage() {
-  if (Date.now() - windowsSwapUpdatedAt < 60_000) return Promise.resolve(windowsSwapCache);
-  return new Promise((resolve) => {
-    execFile(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", "$samples=(Get-Counter '\\Memory\\Commit Limit','\\Paging File(_Total)\\% Usage' -ErrorAction SilentlyContinue).CounterSamples; if($samples.Count -ge 2){Write-Output \"$($samples[0].CookedValue),$($samples[1].CookedValue)\"}"],
-      { timeout: 5000, windowsHide: true, maxBuffer: 256 * 1024 },
-      (error, stdout) => {
-        windowsSwapUpdatedAt = Date.now();
-        if (error) return resolve(windowsSwapCache);
-        const [commitLimit, usagePercent] = String(stdout).trim().split(",").map(Number);
-        const total = Math.max(0, (commitLimit || 0) - os.totalmem());
-        if (total > 0) windowsSwapCache = { total, used: Math.min(total, total * Math.max(0, usagePercent || 0) / 100) };
-        return resolve(windowsSwapCache);
-      },
-    );
-  });
-}
-
-function getLocalSwapUsage() {
-  if (process.platform === "linux") return Promise.resolve(linuxSwapUsage());
-  if (process.platform === "win32") return windowsSwapUsage();
-  return Promise.resolve({ used: 0, total: 0 });
-}
-
-function linuxSocketCounts() {
-  const count = (files) => files.reduce((total, file) => {
-    try {
-      return total + Math.max(0, fs.readFileSync(file, "utf8").trim().split(/\r?\n/).length - 1);
-    } catch {
-      return total;
-    }
-  }, 0);
-  return {
-    tcpConnections: count(["/proc/net/tcp", "/proc/net/tcp6"]),
-    udpConnections: count(["/proc/net/udp", "/proc/net/udp6"]),
-  };
-}
-
-function linuxNetworkCounters() {
-  try {
-    return fs.readFileSync("/proc/net/dev", "utf8").trim().split(/\r?\n/).slice(2).reduce((result, row) => {
-      const [name, data] = row.trim().split(":");
-      if (!data || name.trim() === "lo") return result;
-      const fields = data.trim().split(/\s+/).map(Number);
-      result.rx += fields[0] || 0;
-      result.tx += fields[8] || 0;
-      return result;
-    }, { rx: 0, tx: 0 });
-  } catch {
-    try {
-      return fs.readdirSync("/sys/class/net").reduce((result, name) => {
-        if (name === "lo") return result;
-        result.rx += Number(fs.readFileSync(`/sys/class/net/${name}/statistics/rx_bytes`, "utf8").trim()) || 0;
-        result.tx += Number(fs.readFileSync(`/sys/class/net/${name}/statistics/tx_bytes`, "utf8").trim()) || 0;
-        return result;
-      }, { rx: 0, tx: 0 });
-    } catch {
-      return { rx: 0, tx: 0 };
-    }
-  }
-}
-
-async function linuxProcessCount() {
-  try {
-    return fs.readdirSync("/proc", { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).length;
-  } catch {
-    const output = await execText("ps", ["-e", "-o", "pid="]);
-    return output.split(/\r?\n/).filter((line) => /^\s*\d+\s*$/.test(line)).length;
-  }
-}
-
-let windowsSystemCache = { processCount: 0, tcpConnections: 0, udpConnections: 0 };
-let windowsSystemUpdatedAt = 0;
-async function windowsSystemCounts() {
-  if (Date.now() - windowsSystemUpdatedAt < 15_000) return windowsSystemCache;
-  const [socketOutput, processOutput, taskOutput] = await Promise.all([
-    execText("netstat.exe", ["-ano"]),
-    execText("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "(Get-Process -ErrorAction SilentlyContinue).Count"]),
-    execText("tasklist.exe", ["/FO", "CSV", "/NH"]),
-  ]);
-  const lines = socketOutput.split(/\r?\n/);
-  windowsSystemCache = {
-    processCount: Number(processOutput.trim()) || taskOutput.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith("INFO:")).length,
-    tcpConnections: lines.filter((line) => /^\s*TCP\s+/i.test(line)).length,
-    udpConnections: lines.filter((line) => /^\s*UDP\s+/i.test(line)).length,
-  };
-  windowsSystemUpdatedAt = Date.now();
-  return windowsSystemCache;
-}
-
-async function getLocalPlatformStats() {
-  if (process.platform === "linux") return { ...linuxNetworkCounters(), processCount: await linuxProcessCount(), ...linuxSocketCounts() };
-  if (process.platform === "win32") {
-    const [interfaceOutput, counts] = await Promise.all([execText("netstat.exe", ["-e"]), windowsSystemCounts()]);
-    const counterLine = interfaceOutput.split(/\r?\n/).map((line) => line.match(/^\s*\D+?\s+(\d+)\s+(\d+)\s*$/)).find(Boolean);
-    return { rx: Number(counterLine?.[1]) || 0, tx: Number(counterLine?.[2]) || 0, ...counts };
-  }
-  return { rx: 0, tx: 0, processCount: 0, tcpConnections: 0, udpConnections: 0 };
-}
-
-let previousLocalNetwork;
-function getLocalNetworkMetrics(counters) {
-  const current = { rx: Math.max(0, Number(counters.rx) || 0), tx: Math.max(0, Number(counters.tx) || 0), timestamp: Date.now() };
-  if (!previousLocalNetwork) {
-    previousLocalNetwork = current;
-    return { downloadSpeed: 0, uploadSpeed: 0, downloadTotal: current.rx, uploadTotal: current.tx };
-  }
-  const elapsed = Math.max(0.001, (current.timestamp - previousLocalNetwork.timestamp) / 1000);
-  const metrics = {
-    downloadSpeed: Math.max(0, current.rx - previousLocalNetwork.rx) / elapsed,
-    uploadSpeed: Math.max(0, current.tx - previousLocalNetwork.tx) / elapsed,
-    downloadTotal: current.rx,
-    uploadTotal: current.tx,
-  };
-  previousLocalNetwork = current;
-  return metrics;
-}
-
-let localMetricsBusy = false;
-async function collectLocalMetrics() {
-  if (localMetricsBusy) return;
-  localMetricsBusy = true;
-  try {
-    const info = getHostInfo();
-    if (serverConfigs[info.id]?.localCollectorDisabled) return;
-    const memoryTotal = os.totalmem();
-    const memoryUsed = memoryTotal - os.freemem();
-    const disk = getDiskMetrics();
-    const [swap, platformStats] = await Promise.all([getLocalSwapUsage(), getLocalPlatformStats()]);
-    const networkInterfaces = getNetworkAdapters();
-    const cpu = getCpuUsage();
-    if (serverConfigs[info.id]?.localCollectorDisabled) return;
-    upsertNode({
-      ...info,
-      status: "online",
-      cpu: cpu.total,
-      cpuCoreUsage: cpu.cores,
-      memory: {
-        used: memoryUsed,
-        total: memoryTotal,
-        percent: memoryTotal ? (memoryUsed / memoryTotal) * 100 : 0,
-      },
-      swap: {
-        used: swap.used,
-        total: swap.total,
-        percent: swap.total ? (swap.used / swap.total) * 100 : 0,
-      },
-      disk: {
-        used: disk.used,
-        total: disk.total,
-        percent: disk.total ? (disk.used / disk.total) * 100 : 0,
-      },
-      disks: disk.disks,
-      diskCount: disk.disks.length,
-      networkInterfaces,
-      networkInterfaceCount: networkInterfaces.length,
-      network: getLocalNetworkMetrics(platformStats),
-      load: os.loadavg(),
-      uptime: os.uptime(),
-      temperature: 0,
-      processCount: platformStats.processCount,
-      tcpConnections: platformStats.tcpConnections,
-      udpConnections: platformStats.udpConnections,
-      lastSeen: Date.now(),
-    });
-  } finally {
-    localMetricsBusy = false;
-  }
-}
-
 function serviceById(id) {
   return services.find((service) => String(service.id) === String(id));
 }
@@ -1818,74 +1566,10 @@ function runIcmpPing(target) {
   });
 }
 
-function runTcpPing(target) {
-  let parsed;
-  try {
-    parsed = new URL(`tcp://${target}`);
-  } catch {
-    return Promise.resolve({ success: false, latency: null, error: "Invalid TCP target" });
-  }
-  const startedAt = performance.now();
-  return new Promise((resolve) => {
-    let settled = false;
-    const socket = net.createConnection({ host: parsed.hostname, port: Number(parsed.port) });
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(result);
-    };
-    socket.setTimeout(5000);
-    socket.once("connect", () => finish({ success: true, latency: performance.now() - startedAt, error: "" }));
-    socket.once("timeout", () => finish({ success: false, latency: null, error: "TCP connection timed out" }));
-    socket.once("error", (error) => finish({ success: false, latency: null, error: error.code || error.message }));
-  });
-}
-
-async function runMonitorCheck(service) {
-  if (service.type === "icmp") return runIcmpPing(service.target);
-  if (service.type === "tcp") return runTcpPing(service.target);
-  const startedAt = performance.now();
-  try {
-    const response = await fetch(service.target, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(7000) });
-    response.body?.cancel();
-    return {
-      success: response.ok,
-      latency: performance.now() - startedAt,
-      statusCode: response.status,
-      error: response.ok ? "" : `HTTP ${response.status}`,
-    };
-  } catch (error) {
-    return { success: false, latency: null, error: error instanceof Error ? error.message : "HTTP request failed" };
-  }
-}
-
 function monitorTasksForServer(serverId) {
   return services
     .filter((service) => service.enabled && (service.serverIds.length === 0 || service.serverIds.includes(String(serverId))))
     .map((service) => ({ id: service.id, name: service.name, type: service.type, target: service.target, interval: service.interval }));
-}
-
-let dashboardMonitorRunnerBusy = false;
-
-async function runDashboardMonitors() {
-  if (dashboardMonitorRunnerBusy) return;
-  dashboardMonitorRunnerBusy = true;
-  try {
-    const runnableNodes = [...nodes.values()].filter((node) => node.source === "local");
-    for (const service of services.filter((item) => item.enabled)) {
-      const targets = runnableNodes.filter((node) => service.serverIds.length === 0 || service.serverIds.includes(node.id));
-      for (const node of targets) {
-        const key = `${service.id}:${node.id}`;
-        const lastRun = serviceLastRuns.get(key) || 0;
-        if (Date.now() - lastRun < service.interval * 1000) continue;
-        serviceLastRuns.set(key, Date.now());
-        recordServiceResult(service.id, node.id, await runMonitorCheck(service), "dashboard");
-      }
-    }
-  } finally {
-    dashboardMonitorRunnerBusy = false;
-  }
 }
 
 app.get("/api/health", (_req, res) => {
@@ -2279,30 +1963,20 @@ app.delete("/api/admin/servers/:id", requireAdmin, (req, res) => {
   const node = nodes.get(req.params.id);
   if (!node) return res.status(404).json({ error: "Server not found" });
   const serverId = req.params.id;
-  const localHostNode = node.source === "local" || req.params.id === getHostInfo().id;
   nodes.delete(serverId);
   history.delete(serverId);
   removePersistedHistory(nodeHistoryDir, "serverId", serverId);
+  removeServiceHistoryForServer(serverId);
   delete availabilityHistory[serverId];
   delete trafficTotals[serverId];
   delete updateState.agents[serverId];
-  if (localHostNode) {
-    serverConfigs[serverId] = {
-      name: serverConfigs[serverId]?.name || node.name,
-      localCollectorDisabled: true,
-      deletedLocalNode: true,
-      updatedAt: Date.now(),
-    };
-  } else {
-    delete serverConfigs[serverId];
-  }
+  delete serverConfigs[serverId];
   let servicesChanged = false;
   services = services.map((service) => {
     if (!service.serverIds.includes(serverId)) return service;
     servicesChanged = true;
     return { ...service, serverIds: service.serverIds.filter((id) => id !== serverId), updatedAt: Date.now() };
   });
-  for (const key of serviceLastRuns.keys()) if (key.endsWith(`:${serverId}`)) serviceLastRuns.delete(key);
   alertStates.offline.delete(serverId);
   alertStates.load.delete(serverId);
   alertStates.traffic.delete(serverId);
@@ -2348,7 +2022,6 @@ app.put("/api/admin/services/interval", requireAdmin, (req, res) => {
   if (!Number.isFinite(interval) || interval < 5 || interval > 86400) return res.status(400).json({ error: "监控间隔必须在 5 到 86400 秒之间" });
   const updatedAt = Date.now();
   services = services.map((service) => ({ ...service, interval, updatedAt }));
-  serviceLastRuns.clear();
   writeJson(servicesFile, services);
   return res.json({ updated: services.length, interval, services: servicesForServer(undefined, true) });
 });
@@ -2425,16 +2098,6 @@ function acceptAgentReport(report, suppliedToken) {
   }
 
   const registeredId = registeredAgent?.[0] || null;
-  if (registeredId && registeredId === getHostInfo().id && !serverConfigs[registeredId]?.localCollectorDisabled) {
-    serverConfigs[registeredId] = {
-      ...serverConfigs[registeredId],
-      localCollectorDisabled: true,
-      deletedLocalNode: false,
-      updatedAt: Date.now(),
-    };
-    writeJson(serverConfigsFile, serverConfigs);
-  }
-
   const { monitorResults, updateStatus, ...nodeReport } = report;
   const node = upsertNode({
     ...nodeReport,
@@ -2602,15 +2265,9 @@ if (fs.existsSync(distDir)) {
   });
 }
 
+removeLegacyLocalCollectorState();
 loadPersistedHistories();
 hydrateRegisteredAgents();
-
-setInterval(() => {
-  collectLocalMetrics();
-  broadcast();
-}, 3000);
-
-setInterval(runDashboardMonitors, 5000);
 setInterval(recordAvailabilitySample, 60 * 1000);
 setInterval(runNotificationChecks, 15 * 1000);
 setInterval(cleanupHistoryFiles, 60 * 60 * 1000);
@@ -2624,12 +2281,7 @@ server.listen(port, "0.0.0.0", () => {
   console.log(`Orange Probe API listening on http://localhost:${port}`);
   if (!adminAuthExistedAtStartup && !process.env.ADMIN_PASSWORD) console.warn("Admin password is using the development default; change it in the admin settings before deployment.");
   if (!process.env.PROBE_TOKEN) console.warn("Probe token is using the development default; set PROBE_TOKEN before deployment.");
-  collectLocalMetrics();
   broadcast();
-  runDashboardMonitors();
   recordAvailabilitySample();
   runNotificationChecks();
-  refreshLocalRegion();
 });
-
-setInterval(refreshLocalRegion, 6 * 60 * 60 * 1000).unref();

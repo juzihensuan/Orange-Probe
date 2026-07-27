@@ -26,7 +26,7 @@ export interface ServerMetric {
   cpuCores: number;
   version: string;
   tags: string[];
-  source: "local" | "agent";
+  source: "agent";
   reportInterval?: number;
   displayIndex?: number;
   group?: string;

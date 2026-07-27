@@ -20,7 +20,7 @@ import {
   YAxis,
 } from "recharts";
 import { useProbe } from "./hooks/useProbe";
-import { formatBytes, formatRelativeTime, formatSpeed, formatSpeedCompact, formatUptime, timeLabel } from "./lib/format";
+import { formatBytes, formatSpeed, formatSpeedCompact, formatUptime, timeLabel } from "./lib/format";
 import type { HistoryPoint, ServerMetric, ServiceHistoryPoint, ServiceMonitor } from "./types";
 import { ChartYAxisTick } from "./components/Charts";
 

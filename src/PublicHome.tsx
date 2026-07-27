@@ -18,9 +18,21 @@ import { useProbe } from "./hooks/useProbe";
 import { formatBytes, formatSpeed } from "./lib/format";
 import type { ServerMetric } from "./types";
 import RegionFlag from "./components/RegionFlag";
+import SelectMenu from "./components/SelectMenu";
 
 type PublicSort = "default" | "name" | "uptime" | "cpu" | "memory" | "disk" | "download" | "upload";
 type PublicLayout = "grid" | "list";
+
+const publicSortOptions: Array<{ value: PublicSort; label: string }> = [
+  { value: "default", label: "默认" },
+  { value: "name", label: "名称" },
+  { value: "uptime", label: "运行时间" },
+  { value: "cpu", label: "CPU" },
+  { value: "memory", label: "内存" },
+  { value: "disk", label: "磁盘" },
+  { value: "download", label: "下载" },
+  { value: "upload", label: "上传" },
+];
 
 function PublicMetric({ label, value, percent }: { label: string; value: string; percent?: number }) {
   return (
@@ -163,7 +175,7 @@ export default function PublicHome() {
             <button className={layout === "list" ? "active" : ""} onClick={() => setLayout("list")} title="单列视图"><LayoutList size={16} /></button>
             <span><CircleDot size={14} />实时状态</span>
           </div>
-          <label className="public-sort"><ArrowUpDown size={14} /><span>排序</span><i /><select value={sort} onChange={(event) => setSort(event.target.value as PublicSort)}><option value="default">默认</option><option value="name">名称</option><option value="uptime">运行时间</option><option value="cpu">CPU</option><option value="memory">内存</option><option value="disk">磁盘</option><option value="download">下载</option><option value="upload">上传</option></select></label>
+          <div className="public-sort"><ArrowUpDown size={14} /><span className="public-sort-label">排序</span><i /><div className="public-sort-select"><SelectMenu label="服务器排序方式" value={sort} options={publicSortOptions} onChange={setSort} /></div></div>
         </section>
 
         {visibleServers.length ? (
