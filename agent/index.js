@@ -250,7 +250,7 @@ const staticInfo = {
   arch: os.arch(),
   cpuModel: cpuInfo.model || "Unknown CPU",
   cpuCores: os.cpus().length,
-  version: "1.2.2",
+  version: "1.2.3",
   capabilities: ["self-update"],
   tags,
   reportInterval: interval,
@@ -338,30 +338,75 @@ function getDiskMetrics() {
   };
 }
 
+function linuxDefaultRouteInterfaces() {
+  const interfaces = new Set();
+  try {
+    const rows = fs.readFileSync("/proc/net/route", "utf8").trim().split(/\r?\n/).slice(1);
+    for (const row of rows) {
+      const fields = row.trim().split(/\s+/);
+      if (fields.length >= 8 && fields[1] === "00000000" && fields[7] === "00000000" && (Number.parseInt(fields[3], 16) & 1)) {
+        if (fields[0] !== "lo") interfaces.add(fields[0]);
+      }
+    }
+  } catch {
+    // IPv4 routing information may be unavailable in restricted containers.
+  }
+  try {
+    const rows = fs.readFileSync("/proc/net/ipv6_route", "utf8").trim().split(/\r?\n/);
+    for (const row of rows) {
+      const fields = row.trim().split(/\s+/);
+      if (fields.length >= 10 && /^0{32}$/.test(fields[0]) && fields[1] === "00") {
+        const name = fields.at(-1);
+        if (name && name !== "lo") interfaces.add(name);
+      }
+    }
+  } catch {
+    // IPv6 may be disabled.
+  }
+  return interfaces;
+}
+
+function isTransientLinuxInterface(name) {
+  return /^(?:lo|docker\d*|veth|br-[0-9a-f]+|virbr|cni|flannel|cali|kube-ipvs|podman|lxcbr|vnet)/i.test(name);
+}
+
+function selectLinuxTrafficInterfaces(names) {
+  const routes = linuxDefaultRouteInterfaces();
+  const routed = names.filter((name) => routes.has(name));
+  if (routed.length) return { names: routed, mode: "route" };
+  return { names: names.filter((name) => !isTransientLinuxInterface(name)), mode: "fallback" };
+}
+
 function linuxNetworkCounters() {
   try {
     const rows = fs.readFileSync("/proc/net/dev", "utf8").trim().split(/\r?\n/).slice(2);
-    return rows.reduce(
+    const parsed = rows.map((row) => {
+      const [name, data] = row.trim().split(":");
+      if (!data) return null;
+      const fields = data.trim().split(/\s+/).map(Number);
+      return { name: name.trim(), rx: fields[0] || 0, tx: fields[8] || 0 };
+    }).filter(Boolean);
+    const selected = selectLinuxTrafficInterfaces(parsed.map((item) => item.name));
+    const totals = parsed.filter((item) => selected.names.includes(item.name)).reduce(
       (result, row) => {
-        const [name, data] = row.trim().split(":");
-        if (!data || name.trim() === "lo") return result;
-        const fields = data.trim().split(/\s+/).map(Number);
-        result.rx += fields[0] || 0;
-        result.tx += fields[8] || 0;
+        result.rx += row.rx;
+        result.tx += row.tx;
         return result;
       },
       { rx: 0, tx: 0 },
     );
+    return { ...totals, counterKey: `linux-${selected.mode}-v2:${selected.names.sort().join(",")}` };
   } catch {
     try {
-      return fs.readdirSync("/sys/class/net").reduce((result, name) => {
-        if (name === "lo") return result;
+      const selected = selectLinuxTrafficInterfaces(fs.readdirSync("/sys/class/net"));
+      const totals = selected.names.reduce((result, name) => {
         result.rx += Number(fs.readFileSync(`/sys/class/net/${name}/statistics/rx_bytes`, "utf8").trim()) || 0;
         result.tx += Number(fs.readFileSync(`/sys/class/net/${name}/statistics/tx_bytes`, "utf8").trim()) || 0;
         return result;
       }, { rx: 0, tx: 0 });
+      return { ...totals, counterKey: `linux-${selected.mode}-v2:${selected.names.sort().join(",")}` };
     } catch {
-      return { rx: 0, tx: 0 };
+      return { rx: 0, tx: 0, counterKey: "linux-unavailable-v2" };
     }
   }
 }
@@ -472,6 +517,7 @@ async function runWindowsStats() {
   return {
     rx: Number(counterLine?.[1]) || 0,
     tx: Number(counterLine?.[2]) || 0,
+    counterKey: "windows-netstat-e-v2",
     processCount: Number(processOutput.trim()) || taskOutput.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith("INFO:")).length,
     tcpConnections: tcpOutput.split(/\r?\n/).filter((line) => /^\s*TCP\s+/i.test(line)).length,
     udpConnections: udpOutput.split(/\r?\n/).filter((line) => /^\s*UDP\s+/i.test(line)).length,
@@ -490,7 +536,7 @@ async function getPlatformStats() {
       swap: linuxSwapUsage(),
     };
   }
-  return { rx: 0, tx: 0, processCount: 0, tcpConnections: 0, udpConnections: 0, swap: { used: 0, total: 0 } };
+  return { rx: 0, tx: 0, counterKey: `${process.platform}-unavailable-v2`, processCount: 0, tcpConnections: 0, udpConnections: 0, swap: { used: 0, total: 0 } };
 }
 
 function getNetworkMetrics(counters) {
@@ -498,7 +544,13 @@ function getNetworkMetrics(counters) {
   const current = { ...counters, timestamp: now };
   if (!previousNetwork) {
     previousNetwork = current;
-    return { downloadSpeed: 0, uploadSpeed: 0, downloadTotal: counters.rx, uploadTotal: counters.tx };
+    return {
+      downloadSpeed: 0,
+      uploadSpeed: 0,
+      downloadTotal: counters.rx,
+      uploadTotal: counters.tx,
+      counterKey: String(counters.counterKey || `${process.platform}-aggregate-v2`),
+    };
   }
   const elapsed = Math.max(0.001, (now - previousNetwork.timestamp) / 1000);
   const result = {
@@ -506,6 +558,7 @@ function getNetworkMetrics(counters) {
     uploadSpeed: Math.max(0, counters.tx - previousNetwork.tx) / elapsed,
     downloadTotal: counters.rx,
     uploadTotal: counters.tx,
+    counterKey: String(counters.counterKey || `${process.platform}-aggregate-v2`),
   };
   previousNetwork = current;
   return result;

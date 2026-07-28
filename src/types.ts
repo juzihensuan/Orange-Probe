@@ -57,6 +57,8 @@ export interface ServerMetric {
   trafficPercent?: number;
   trafficWindowStart?: number;
   trafficWindowEnd?: number;
+  trafficResetDay?: number;
+  trafficResetSource?: "purchaseDate" | "expirationDate" | "default";
   trafficNotify?: boolean;
   trafficNotifyPercent?: number;
   agentTokenHint?: string;

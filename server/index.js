@@ -8,10 +8,11 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import proxyaddr from "proxy-addr";
 import { WebSocketServer } from "ws";
+import { dateParts, monthAnchorTimestamp, trafficCounterDelta, trafficWindowForConfig } from "./traffic.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const appVersion = "1.2.2";
+const appVersion = "1.2.3";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const githubToken = String(process.env.GITHUB_TOKEN || "");
@@ -201,6 +202,7 @@ if (updateState.server.targetVersion && compareVersions(appVersion, updateState.
   writeJson(updatesFile, updateState);
 }
 let trafficTotalsDirty = false;
+let trafficTotalsPersistTimer;
 let serverConfigsMigrated = false;
 for (const config of Object.values(serverConfigs)) {
   if (!config || typeof config !== "object") continue;
@@ -660,10 +662,10 @@ function sanitizeServerConfig(value, current = {}) {
   if (billingCycle === "custom" && !customBillingCycle) throw new Error("Custom billing cycle name is required");
   const purchaseDate = text(pick("purchaseDate"), 10);
   const expirationDate = text(pick("expirationDate"), 10);
-  if (purchaseDate && (!/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate) || Number.isNaN(Date.parse(`${purchaseDate}T00:00:00.000Z`)))) {
+  if (purchaseDate && !dateParts(purchaseDate)) {
     throw new Error("Purchase date must use YYYY-MM-DD");
   }
-  if (expirationDate && (!/^\d{4}-\d{2}-\d{2}$/.test(expirationDate) || Number.isNaN(Date.parse(`${expirationDate}T23:59:59.999Z`)))) {
+  if (expirationDate && !dateParts(expirationDate)) {
     throw new Error("Expiration date must use YYYY-MM-DD");
   }
   if (purchaseDate && expirationDate && Date.parse(`${purchaseDate}T00:00:00.000Z`) > Date.parse(`${expirationDate}T23:59:59.999Z`)) {
@@ -752,45 +754,6 @@ const hashId = (value) =>
 
 const bytes = (value) => Math.max(0, Number(value) || 0);
 
-function dateParts(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return null;
-  const [year, month, day] = String(value).split("-").map(Number);
-  const timestamp = Date.UTC(year, month - 1, day);
-  return Number.isNaN(timestamp) ? null : { year, month: month - 1, day };
-}
-
-function monthAnchorTimestamp(year, month, day) {
-  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  return Date.UTC(year, month, Math.min(day, lastDay));
-}
-
-function trafficWindowForConfig(config = {}, now = Date.now()) {
-  const preferredAnchor = config.billingCycle === "monthly"
-    ? config.expirationDate || config.purchaseDate
-    : config.purchaseDate || config.expirationDate;
-  const anchor = dateParts(preferredAnchor) || { day: 1 };
-  const current = new Date(now);
-  let year = current.getUTCFullYear();
-  let month = current.getUTCMonth();
-  let start = monthAnchorTimestamp(year, month, anchor.day);
-  if (start > now) {
-    month -= 1;
-    if (month < 0) {
-      month = 11;
-      year -= 1;
-    }
-    start = monthAnchorTimestamp(year, month, anchor.day);
-  }
-  let nextYear = year;
-  let nextMonth = month + 1;
-  if (nextMonth > 11) {
-    nextMonth = 0;
-    nextYear += 1;
-  }
-  const end = monthAnchorTimestamp(nextYear, nextMonth, anchor.day);
-  return { key: `${new Date(start).toISOString()}:${new Date(end).toISOString()}`, start, end };
-}
-
 function servicePeriodForConfig(config = {}, now = Date.now()) {
   const purchasedAt = dateParts(config.purchaseDate) ? Date.parse(`${config.purchaseDate}T00:00:00.000Z`) : null;
   const expiresAt = dateParts(config.expirationDate) ? Date.parse(`${config.expirationDate}T23:59:59.999Z`) : null;
@@ -860,25 +823,29 @@ function serviceCycleForConfig(config = {}, now = Date.now()) {
 function accumulatedTraffic(nodeId, network, config = {}) {
   const rawDownload = bytes(network?.downloadTotal);
   const rawUpload = bytes(network?.uploadTotal);
+  const counterKey = String(network?.counterKey || "").trim().slice(0, 256);
   const previous = trafficTotals[nodeId];
   const window = trafficWindowForConfig(config);
   const hasPreviousSample = Boolean(previous && previous.initialized !== false && Number.isFinite(Number(previous.rawDownload)) && Number.isFinite(Number(previous.rawUpload)));
-  const deltaDownload = hasPreviousSample
-    ? (rawDownload >= bytes(previous.rawDownload) ? rawDownload - bytes(previous.rawDownload) : rawDownload)
-    : 0;
-  const deltaUpload = hasPreviousSample
-    ? (rawUpload >= bytes(previous.rawUpload) ? rawUpload - bytes(previous.rawUpload) : rawUpload)
-    : 0;
   const sameWindow = previous?.windowKey === window.key;
+  const delta = hasPreviousSample && sameWindow
+    ? trafficCounterDelta(
+      { download: rawDownload, upload: rawUpload },
+      { download: previous.rawDownload, upload: previous.rawUpload },
+      counterKey,
+      previous.counterKey,
+    )
+    : { download: 0, upload: 0, rebased: true };
   const previousDownload = sameWindow ? bytes(previous.windowDownload ?? previous.downloadTotal) : 0;
   const previousUpload = sameWindow ? bytes(previous.windowUpload ?? previous.uploadTotal) : 0;
-  const windowDownload = previousDownload + deltaDownload;
-  const windowUpload = previousUpload + deltaUpload;
+  const windowDownload = previousDownload + delta.download;
+  const windowUpload = previousUpload + delta.upload;
   trafficTotals[nodeId] = {
     rawDownload,
     rawUpload,
-    lifetimeDownload: bytes(previous?.lifetimeDownload ?? previous?.downloadTotal) + deltaDownload,
-    lifetimeUpload: bytes(previous?.lifetimeUpload ?? previous?.uploadTotal) + deltaUpload,
+    counterKey,
+    lifetimeDownload: bytes(previous?.lifetimeDownload ?? previous?.downloadTotal) + delta.download,
+    lifetimeUpload: bytes(previous?.lifetimeUpload ?? previous?.uploadTotal) + delta.upload,
     windowDownload,
     windowUpload,
     windowKey: window.key,
@@ -888,13 +855,27 @@ function accumulatedTraffic(nodeId, network, config = {}) {
     updatedAt: Date.now(),
   };
   trafficTotalsDirty = true;
+  scheduleTrafficTotalsPersist();
   return { downloadTotal: windowDownload, uploadTotal: windowUpload };
 }
 
 function persistTrafficTotals() {
+  if (trafficTotalsPersistTimer) {
+    clearTimeout(trafficTotalsPersistTimer);
+    trafficTotalsPersistTimer = undefined;
+  }
   if (!trafficTotalsDirty) return;
   writeJson(trafficTotalsFile, trafficTotals);
   trafficTotalsDirty = false;
+}
+
+function scheduleTrafficTotalsPersist() {
+  if (trafficTotalsPersistTimer) return;
+  trafficTotalsPersistTimer = setTimeout(() => {
+    trafficTotalsPersistTimer = undefined;
+    persistTrafficTotals();
+  }, 1000);
+  trafficTotalsPersistTimer.unref();
 }
 
 function appendHistoryLine(directory, record) {
@@ -1022,6 +1003,8 @@ function configuredNode(node, isAdmin = false) {
     trafficPercent: trafficLimitBytes ? round((trafficUsed / trafficLimitBytes) * 100, 2) : 0,
     trafficWindowStart: trafficWindow.start,
     trafficWindowEnd: trafficWindow.end,
+    trafficResetDay: trafficWindow.resetDay,
+    trafficResetSource: trafficWindow.anchorSource,
   };
   if (isAdmin) {
     const servicePeriod = servicePeriodForConfig(config);
@@ -2374,6 +2357,20 @@ setInterval(() => {
   for (const [token, session] of adminSessions) if (session.expiresAt <= now) adminSessions.delete(token);
   for (const [key, attempt] of loginAttempts) if (attempt.resetAt <= now) loginAttempts.delete(key);
 }, 10 * 60 * 1000).unref();
+
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    persistTrafficTotals();
+  } catch (error) {
+    console.error(`Cannot persist traffic totals during ${signal}:`, error instanceof Error ? error.message : error);
+  }
+  process.exit(0);
+}
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
 
 server.listen(port, "0.0.0.0", () => {
   console.log(`Orange Probe API listening on http://localhost:${port}`);
