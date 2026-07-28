@@ -11,7 +11,7 @@ interface FirewallEntry {
 
 interface FirewallPayload {
   currentIp: string;
-  currentIpSource: "socket" | "x-forwarded-for" | "x-real-ip" | "unavailable";
+  currentIpSource: "socket" | "x-forwarded-for" | "x-real-ip" | "visitor-header" | "unavailable";
   blocked: FirewallEntry[];
 }
 
@@ -19,6 +19,7 @@ const ipSourceLabels: Record<FirewallPayload["currentIpSource"], string> = {
   socket: "直连地址",
   "x-forwarded-for": "可信代理链",
   "x-real-ip": "可信代理地址",
+  "visitor-header": "最终访问者",
   unavailable: "无法识别",
 };
 

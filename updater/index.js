@@ -109,7 +109,7 @@ async function scheduleUpdaterRecreate(updaterImage) {
   const currentContainer = String(process.env.HOSTNAME || "").trim();
   if (!/^[a-f0-9]{12,64}$/i.test(currentContainer)) throw new Error("Cannot identify the updater container for self-replacement");
   const helperName = `${projectName.replace(/[^A-Za-z0-9_.-]/g, "-")}-updater-reloader-${Date.now()}`.slice(0, 120);
-  const composeArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName, "up", "-d", "--no-deps", "--no-build", "orange-probe-updater"];
+  const composeArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName, "up", "-d", "--no-deps", "--no-build", "--force-recreate", "orange-probe-updater"];
   const helperScript = `setTimeout(() => import("node:child_process").then(({ spawn }) => { const child = spawn("docker", ${JSON.stringify(composeArguments)}, { stdio: "inherit" }); child.once("error", () => process.exit(1)); child.once("exit", (code) => process.exit(code ?? 1)); }), 2000)`;
   await runCommand("docker", ["run", "--rm", "-d", "--name", helperName, "--volumes-from", currentContainer, "--entrypoint", "node", updaterImage, "-e", helperScript]);
 }
@@ -123,10 +123,10 @@ async function updateServer(targetVersion) {
     await authenticateRegistry(images);
     await pullReleaseImages(images, version);
     const baseArguments = ["compose", "--env-file", "/deployment/.env", "-f", composeFile, "--project-name", projectName];
-    await runCommand("docker", [...baseArguments, "up", "-d", "--no-deps", "--no-build", "orange-probe"]);
+    await runCommand("docker", [...baseArguments, "up", "-d", "--no-deps", "--no-build", "--force-recreate", "orange-probe"]);
     await scheduleUpdaterRecreate(images.updaterImage);
-    lastUpdate = { ...lastUpdate, targetVersion: version, imageSource: "registry", status: "completed", completedAt: Date.now(), error: "" };
-    console.log(`[${new Date().toISOString()}] Orange Probe server updated to ${version}`);
+    lastUpdate = { ...lastUpdate, targetVersion: version, imageSource: "registry", restartScope: "containers-only", status: "completed", completedAt: Date.now(), error: "" };
+    console.log(`[${new Date().toISOString()}] Orange Probe containers updated to ${version}; host restart was not requested`);
   } catch (error) {
     lastUpdate = { ...lastUpdate, status: "failed", completedAt: Date.now(), error: error instanceof Error ? error.message : String(error) };
     console.error(`[${new Date().toISOString()}] Orange Probe update failed: ${lastUpdate.error}`);
@@ -175,7 +175,7 @@ const server = http.createServer((request, response) => {
     }
     const targetVersion = String(body.targetVersion || "latest").replace(/[^0-9A-Za-z._-]/g, "").slice(0, 32) || "latest";
     response.writeHead(202);
-    response.end(JSON.stringify({ ok: true, message: `正在下载并部署 v${targetVersion}` }));
+    response.end(JSON.stringify({ ok: true, restartScope: "containers-only", message: `正在拉取 v${targetVersion} 镜像并重建 Orange Probe 容器，宿主机不会重启` }));
     setImmediate(() => updateServer(targetVersion));
   });
 });

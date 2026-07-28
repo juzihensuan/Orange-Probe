@@ -127,7 +127,7 @@ PROBE_WS_URL=wss://你的域名/agent-ws
 
 Orange Probe 会在同一 IP 连续登录失败 5 次后持久化封禁该地址。Nginx 示例已传递 `X-Real-IP` 和 `X-Forwarded-For`，Caddy 的 `reverse_proxy` 也会自动设置标准转发头。
 
-应用仅在直接上游命中 `TRUST_PROXY` 时读取代理头：优先按可信链解析 `X-Forwarded-For`，缺少该头时再读取 `X-Real-IP`。否则一律使用直连地址，避免访客伪造请求头。部署完成后进入后台“防火墙”页面，确认“当前访问 IP”显示的是管理员公网 IP，并核对旁边的识别来源，而不是 `127.0.0.1`、Docker 网关地址或反向代理容器 IP。
+应用会先从受信代理链还原最终访问者地址；普通反代则仅在直接上游命中 `TRUST_PROXY` 时读取代理头，优先解析 `X-Forwarded-For`，缺少该头时再读取 `X-Real-IP`。否则一律使用直连地址，避免访客伪造请求头。部署完成后进入后台“防火墙”页面，确认“当前访问 IP”显示的是管理员公网 IP，并核对旁边的识别来源，而不是 `127.0.0.1`、Docker 网关地址或反向代理容器 IP。
 
 默认值 `loopback, linklocal, uniquelocal` 只信任回环、链路本地和私网代理，适用于反代与应用在同一主机或 Docker 私网的部署。额外的固定代理必须按真实 IP 或 CIDR 追加到 `.env`，例如 `TRUST_PROXY=loopback, linklocal, uniquelocal, 203.0.113.0/24`，然后重新创建容器。不要使用 `0.0.0.0/0`、`::/0`，也不要公开 4174 后再信任任意转发头。
 

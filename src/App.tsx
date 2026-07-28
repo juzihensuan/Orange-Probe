@@ -42,6 +42,7 @@ import {
 import Shell from "./components/Shell";
 import { useProbe } from "./hooks/useProbe";
 import { formatBytes, formatRelativeTime, formatSpeed } from "./lib/format";
+import { clearPendingServerRefresh, readPendingServerRefresh } from "./lib/updateRefresh";
 import type { AlertSettings, ServerMetric, ServerSla, SlaPeriod, ViewName } from "./types";
 
 const defaultSettings: AlertSettings = {
@@ -305,6 +306,28 @@ function AdminDashboard({ session, onSessionChange, onLogout }: { session: Admin
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     localStorage.setItem("orange-probe-theme", dark ? "dark" : "light");
   }, [dark]);
+
+  useEffect(() => {
+    let reloading = false;
+    const refreshAfterContainerUpdate = async () => {
+      const pending = readPendingServerRefresh();
+      if (!pending || reloading) return;
+      try {
+        const response = await fetch("/api/health", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json() as { version?: string };
+        if (payload.version !== pending.targetVersion) return;
+        reloading = true;
+        clearPendingServerRefresh();
+        window.location.reload();
+      } catch {
+        // The application container is expected to be briefly unavailable while it is recreated.
+      }
+    };
+    refreshAfterContainerUpdate();
+    const timer = window.setInterval(refreshAfterContainerUpdate, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     fetch("/api/admin/settings")

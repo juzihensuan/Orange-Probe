@@ -11,7 +11,7 @@ import { WebSocketServer } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const appVersion = "1.2.1";
+const appVersion = "1.2.2";
 const githubRepository = String(process.env.GITHUB_REPOSITORY || "juzihensuan/Orange-Probe").trim();
 const githubApiBaseUrl = String(process.env.GITHUB_API_BASE_URL || "https://api.github.com").replace(/\/$/, "");
 const githubToken = String(process.env.GITHUB_TOKEN || "");
@@ -47,6 +47,14 @@ const telegramApiBaseUrl = String(process.env.TELEGRAM_API_BASE_URL || "https://
 const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", process.env.TRUST_PROXY || "loopback, linklocal, uniquelocal");
+const trustedVisitorProxy = proxyaddr.compile([
+  "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+  "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+  "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+  "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22", "2400:cb00::/32",
+  "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+  "2a06:98c0::/29", "2c0f:f248::/32",
+]);
 const server = http.createServer(app);
 server.requestTimeout = 15_000;
 server.headersTimeout = 20_000;
@@ -374,10 +382,40 @@ function directProxyTrusted(request) {
   }
 }
 
+function requestAddressChain(request) {
+  try {
+    return proxyaddr.all(request).map(normalizeIp).filter(Boolean);
+  } catch {
+    return [normalizeIp(request.socket?.remoteAddress)].filter(Boolean);
+  }
+}
+
+function trustedVisitorIp(request) {
+  const trust = trustProxyFunction();
+  const addresses = requestAddressChain(request);
+  for (let index = 0; index < addresses.length; index += 1) {
+    const address = addresses[index];
+    if (trustedVisitorProxy(address, index)) {
+      const connectingIpv6 = normalizeIp(request.headers["cf-connecting-ipv6"]);
+      if (net.isIP(connectingIpv6) === 6) return connectingIpv6;
+      return normalizeIp(request.headers["cf-connecting-ip"]);
+    }
+    try {
+      if (trust(address, index)) continue;
+    } catch {
+      return "";
+    }
+    return "";
+  }
+  return "";
+}
+
 function requestIpInfo(request) {
   const socketIp = normalizeIp(request.socket?.remoteAddress);
   if (!socketIp) return { ip: "", source: "unavailable" };
   const trust = trustProxyFunction();
+  const visitorIp = trustedVisitorIp(request);
+  if (visitorIp) return { ip: visitorIp, source: "visitor-header" };
   if (!directProxyTrusted(request)) return { ip: socketIp, source: "socket" };
 
   if (String(request.headers["x-forwarded-for"] || "").trim()) {
@@ -676,8 +714,13 @@ function sanitizeService(value, current = {}) {
     if (!new Set(["http:", "https:"]).has(url.protocol)) throw new Error("HTTP target must use http:// or https://");
   }
   if (type === "tcp") {
-    const url = new URL(`tcp://${target}`);
-    if (!url.hostname || !url.port) throw new Error("TCPing target must include a port");
+    const bracketed = target.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    const rawIp = net.isIP(target);
+    const hostname = target.match(/^([^:\s/?#@]+)(?::(\d+))?$/);
+    const port = bracketed?.[2] || hostname?.[2] || "80";
+    if ((!bracketed && !rawIp && !hostname) || (bracketed && net.isIP(bracketed[1]) !== 6) || Number(port) < 1 || Number(port) > 65535) {
+      throw new Error("TCPing target must be a hostname or IP with an optional port");
+    }
   }
   if (type === "icmp" && /:\d+$/.test(target)) throw new Error("ICMP Ping target must not include a port");
 
@@ -1929,6 +1972,7 @@ app.get("/api/admin/updates", requireAdmin, async (req, res) => {
       publishedAt: release.publishedAt,
       updateAvailable: compareVersions(release.version, appVersion) > 0,
       updaterConfigured: Boolean(updaterUrl && updaterToken),
+      targetVersion: String(updateState.server.targetVersion || ""),
       status: updateState.server.status || "idle",
       error: updateState.server.error || latestReleaseCache.error || "",
       requestedAt: Number(updateState.server.requestedAt) || 0,
@@ -1984,7 +2028,7 @@ app.post("/api/admin/updates/server", requireAdmin, async (req, res) => {
     if (!response.ok) throw new Error(payload.error || `Updater HTTP ${response.status}`);
     updateState.server = { ...updateState.server, status: "running", updatedAt: Date.now(), error: "" };
     saveUpdateState();
-    return res.status(202).json({ ok: true, targetVersion: release.version, message: payload.message || "更新任务已提交，服务端将自动重启" });
+    return res.status(202).json({ ok: true, targetVersion: release.version, restartScope: "containers-only", message: payload.message || "更新任务已提交，仅重建 Orange Probe 容器，宿主机不会重启" });
   } catch (error) {
     updateState.server = { ...updateState.server, status: "failed", error: error instanceof Error ? error.message : "Updater request failed", updatedAt: Date.now() };
     saveUpdateState();

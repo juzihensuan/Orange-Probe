@@ -20,7 +20,7 @@ import {
   YAxis,
 } from "recharts";
 import { useProbe } from "./hooks/useProbe";
-import { formatBytes, formatSpeed, formatSpeedCompact, formatUptime, timeLabel } from "./lib/format";
+import { average, formatBytes, formatSpeed, formatSpeedCompact, formatUptime, stableLatencyValues, timeLabel } from "./lib/format";
 import type { HistoryPoint, ServerMetric, ServiceHistoryPoint, ServiceMonitor } from "./types";
 import { ChartYAxisTick } from "./components/Charts";
 
@@ -83,7 +83,7 @@ function DetailChartCard({ title, value, subvalue, data, series, percent = false
   );
 }
 
-function ServiceLatencyTooltip({ active, label, services, histories, period, colorFor }: { active?: boolean; label?: number; services: ServiceMonitor[]; histories: Record<number, ServiceHistoryPoint[]>; period: DetailPeriod; colorFor: (serviceId: number) => string }) {
+function ServiceLatencyTooltip({ active, label, services, histories, period, colorFor, latencyLimitFor }: { active?: boolean; label?: number; services: ServiceMonitor[]; histories: Record<number, ServiceHistoryPoint[]>; period: DetailPeriod; colorFor: (serviceId: number) => string; latencyLimitFor: (serviceId: number) => number }) {
   if (!active || !label) return null;
   const cutoff = Date.now() - periodMilliseconds[period];
   return <div className="service-latency-tooltip"><span>{timeLabel(Number(label))}</span>{services.map((service) => {
@@ -91,7 +91,8 @@ function ServiceLatencyTooltip({ active, label, services, histories, period, col
     const nearest = samples.reduce<ServiceHistoryPoint | null>((best, point) => !best || Math.abs(point.timestamp - Number(label)) < Math.abs(best.timestamp - Number(label)) ? point : best, null);
     const maximumDistance = Math.max(service.interval * 1250, period === "realtime" ? 10_000 : period === "1d" ? 120_000 : 20 * 60_000);
     const sample = nearest && Math.abs(nearest.timestamp - Number(label)) <= maximumDistance ? nearest : null;
-    return <div key={service.id}><i style={{ background: colorFor(service.id) }} /><b>{service.name}</b><strong className={sample && !sample.success ? "failed" : ""}>{!sample ? "--" : sample.success && sample.latency !== null ? `${sample.latency.toFixed(1)} ms` : "丢包"}</strong><small>{sample ? `采样 ${timeLabel(sample.timestamp)}` : "附近无采样"}</small></div>;
+    const outlier = Boolean(sample?.success && sample.latency !== null && sample.latency > latencyLimitFor(service.id));
+    return <div key={service.id}><i style={{ background: colorFor(service.id) }} /><b>{service.name}</b><strong className={sample && (!sample.success || outlier) ? "failed" : ""}>{!sample ? "--" : outlier ? "已过滤" : sample.success && sample.latency !== null ? `${sample.latency.toFixed(1)} ms` : "丢包"}</strong><small>{sample ? `${outlier ? "异常样本" : "采样"} ${timeLabel(sample.timestamp)}` : "附近无采样"}</small></div>;
   })}</div>;
 }
 
@@ -141,18 +142,21 @@ function ServiceNetworkView({ serverId, period }: { serverId: string; period: De
   const serviceStats = (serviceId: number) => {
     const filtered = (histories[serviceId] || []).filter((point) => point.timestamp >= Date.now() - periodMilliseconds[period]);
     const successful = filtered.filter((point) => point.success && point.latency !== null);
-    const averageLatency = successful.length ? successful.reduce((sum, point) => sum + (point.latency || 0), 0) / successful.length : 0;
+    const stableLatencies = stableLatencyValues(successful.map((point) => Number(point.latency)));
+    const latencyCeiling = stableLatencies.length ? Math.max(...stableLatencies) : Number.POSITIVE_INFINITY;
+    const averageLatency = average(stableLatencies);
     const packetLoss = filtered.length ? filtered.filter((point) => !point.success).length / filtered.length * 100 : 0;
-    return { filtered, successfulCount: successful.length, averageLatency, packetLoss, latest: filtered.at(-1) || null };
+    return { filtered, successfulCount: stableLatencies.length, averageLatency, packetLoss, latencyCeiling, latest: filtered.at(-1) || null };
   };
 
   const bucketMilliseconds = period === "realtime" ? 5_000 : period === "1d" ? 60_000 : 10 * 60_000;
   const chartBuckets = new Map<number, Record<string, number | null>>();
   for (const service of visibleServices) {
-    for (const point of serviceStats(service.id).filtered) {
+    const stats = serviceStats(service.id);
+    for (const point of stats.filtered) {
       const timestamp = Math.round(point.timestamp / bucketMilliseconds) * bucketMilliseconds;
       const row = chartBuckets.get(timestamp) || { timestamp };
-      row[`service_${service.id}`] = point.success && point.latency !== null ? point.latency : null;
+      row[`service_${service.id}`] = point.success && point.latency !== null && point.latency <= stats.latencyCeiling ? point.latency : null;
       chartBuckets.set(timestamp, row);
     }
   }
@@ -171,7 +175,7 @@ function ServiceNetworkView({ serverId, period }: { serverId: string; period: De
       <article className="service-latency-chart">
         <div className="server-chart-head"><span><h3>网络延迟</h3><small>Agent 到监控目标的往返延迟</small></span><strong>{visibleServices.length} 条曲线</strong></div>
         <div className="service-curve-legend">{visibleServices.map((service) => <span key={service.id}><i style={{ background: serviceColor(service.id) }} />{service.name}</span>)}</div>
-        <div className="service-chart-canvas">{!hasChartData ? <div className="chart-empty"><Clock3 size={18} /><span>{visibleServices.length ? "等待 Agent 返回更多监控结果" : "没有可显示的延迟曲线"}</span></div> : <ResponsiveContainer><LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><CartesianGrid stroke="var(--chart-grid)" vertical={false} /><XAxis dataKey="timestamp" tickFormatter={timeLabel} tickLine={false} axisLine={false} minTickGap={50} tick={{ fill: "var(--text-muted)", fontSize: 9 }} /><YAxis width={56} tickLine={false} axisLine={false} tick={<ChartYAxisTick formatter={(value) => `${Math.round(value)} ms`} fontSize={9} />} /><Tooltip content={<ServiceLatencyTooltip services={visibleServices} histories={histories} period={period} colorFor={serviceColor} />} />{visibleServices.map((service) => <Line key={service.id} type="monotone" dataKey={`service_${service.id}`} name={service.name} stroke={serviceColor(service.id)} strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />)}</LineChart></ResponsiveContainer>}</div>
+        <div className="service-chart-canvas">{!hasChartData ? <div className="chart-empty"><Clock3 size={18} /><span>{visibleServices.length ? "等待 Agent 返回更多监控结果" : "没有可显示的延迟曲线"}</span></div> : <ResponsiveContainer><LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><CartesianGrid stroke="var(--chart-grid)" vertical={false} /><XAxis dataKey="timestamp" tickFormatter={timeLabel} tickLine={false} axisLine={false} minTickGap={50} tick={{ fill: "var(--text-muted)", fontSize: 9 }} /><YAxis width={56} tickLine={false} axisLine={false} tick={<ChartYAxisTick formatter={(value) => `${Math.round(value)} ms`} fontSize={9} />} /><Tooltip content={<ServiceLatencyTooltip services={visibleServices} histories={histories} period={period} colorFor={serviceColor} latencyLimitFor={(serviceId) => serviceStats(serviceId).latencyCeiling} />} />{visibleServices.map((service) => <Line key={service.id} type="monotone" dataKey={`service_${service.id}`} name={service.name} stroke={serviceColor(service.id)} strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />)}</LineChart></ResponsiveContainer>}</div>
       </article>
     </div>
   );

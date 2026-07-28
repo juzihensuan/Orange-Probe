@@ -18,7 +18,7 @@ const adminPassword = "SmokeAdminPassword123!";
 const telegramMessages = [];
 const updaterRequests = [];
 const childLogs = [];
-let mockReleaseVersion = "1.2.2";
+let mockReleaseVersion = "1.2.3";
 let probeProcess;
 let agentProcess;
 let updaterProcess;
@@ -62,12 +62,12 @@ async function testAgentUpdaterTransaction() {
   try {
     fs.mkdirSync(installDir, { recursive: true });
     fs.mkdirSync(stagingDir, { recursive: true });
-    const oldFiles = { "index.js": "// old Agent\n", "region.js": "// old region\n", "updater.js": "// old updater\n", "package.json": packageJson("1.1.2"), "package-lock.json": packageLock("1.1.2") };
-    const newFiles = { "index.js": "// new Agent\n", "region.js": "// new region\n", "updater.js": "// new updater\n", "package.json": packageJson("1.2.1"), "package-lock.json": packageLock("1.2.1") };
+    const oldFiles = { "index.js": "// old Agent\n", "region.js": "// old region\n", "updater.js": "// old updater\n", "package.json": packageJson("1.2.1"), "package-lock.json": packageLock("1.2.1") };
+    const newFiles = { "index.js": "// new Agent\n", "region.js": "// new region\n", "updater.js": "// new updater\n", "package.json": packageJson("1.2.2"), "package-lock.json": packageLock("1.2.2") };
     for (const [name, content] of Object.entries(oldFiles)) fs.writeFileSync(path.join(installDir, name), content);
     for (const [name, content] of Object.entries(newFiles)) fs.writeFileSync(path.join(stagingDir, name), content);
     legacyParent = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "ignore" });
-    const updater = spawn(process.execPath, ["agent/updater.js", "--staging", stagingDir, "--install", installDir, "--data", dataDir, "--parent", String(legacyParent.pid), "--version", "1.2.1", "--attempt", attemptId], {
+    const updater = spawn(process.execPath, ["agent/updater.js", "--staging", stagingDir, "--install", installDir, "--data", dataDir, "--parent", String(legacyParent.pid), "--version", "1.2.2", "--attempt", attemptId], {
       cwd: rootDir,
       env: { ...process.env, AGENT_SERVICE_MODE: "scheduled-task" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -81,20 +81,20 @@ async function testAgentUpdaterTransaction() {
     });
     assert.equal(exitCode, 0, output.join(""));
     assert.equal(legacyParent.exitCode, null, "Legacy updater waited for the old Agent to exit");
-    assert.equal(JSON.parse(fs.readFileSync(path.join(installDir, "package.json"), "utf8")).version, "1.2.1");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(installDir, "package.json"), "utf8")).version, "1.2.2");
     const result = JSON.parse(fs.readFileSync(path.join(dataDir, "update-result.json"), "utf8"));
-    assert.deepEqual({ state: result.state, targetVersion: result.targetVersion, attemptId: result.attemptId }, { state: "success", targetVersion: "1.2.1", attemptId });
+    assert.deepEqual({ state: result.state, targetVersion: result.targetVersion, attemptId: result.attemptId }, { state: "success", targetVersion: "1.2.2", attemptId });
     assert.equal(fs.existsSync(stagingDir), false);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "update-backup", "package.json"), "utf8")).version, "1.1.2");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "update-backup", "package.json"), "utf8")).version, "1.2.1");
 
     const directStagingDir = path.join(dataDir, "update-direct");
     fs.mkdirSync(directStagingDir, { recursive: true });
-    const directFiles = { "index.js": "// direct Agent\n", "region.js": "// direct region\n", "updater.js": "// direct updater\n", "package.json": packageJson("1.2.2"), "package-lock.json": packageLock("1.2.2") };
+    const directFiles = { "index.js": "// direct Agent\n", "region.js": "// direct region\n", "updater.js": "// direct updater\n", "package.json": packageJson("1.2.3"), "package-lock.json": packageLock("1.2.3") };
     for (const [name, content] of Object.entries(directFiles)) fs.writeFileSync(path.join(directStagingDir, name), content);
     const installed = installStagedUpdate({ stagingDir: directStagingDir, installDir, dataDir, attemptId: crypto.randomUUID() });
-    assert.equal(installed.version, "1.2.2");
+    assert.equal(installed.version, "1.2.3");
     assert.equal(installed.dependenciesChanged, false);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "update-backup", "package.json"), "utf8")).version, "1.2.1");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "update-backup", "package.json"), "utf8")).version, "1.2.2");
   } finally {
     await stopChild(legacyParent);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
@@ -123,8 +123,8 @@ async function testAgentSelfUpdateEndToEnd() {
     const releaseFiles = {};
     for (const file of ["index.js", "region.js", "updater.js", "package.json", "package-lock.json"]) {
       let content = fs.readFileSync(path.join(rootDir, "agent", file));
-      if (file === "index.js") content = Buffer.from(content.toString("utf8").replace('version: "1.2.1"', 'version: "1.2.2"'));
-      if (file === "package.json" || file === "package-lock.json") content = Buffer.from(content.toString("utf8").replaceAll('"version": "1.2.1"', '"version": "1.2.2"'));
+      if (file === "index.js") content = Buffer.from(content.toString("utf8").replace('version: "1.2.2"', 'version: "1.2.3"'));
+      if (file === "package.json" || file === "package-lock.json") content = Buffer.from(content.toString("utf8").replaceAll('"version": "1.2.2"', '"version": "1.2.3"'));
       fs.writeFileSync(path.join(releaseDir, file), content);
       releaseFiles[file] = { content, sha256: crypto.createHash("sha256").update(content).digest("hex") };
     }
@@ -132,7 +132,7 @@ async function testAgentSelfUpdateEndToEnd() {
     updateServer = http.createServer((request, response) => {
       if (request.method === "GET" && request.url === "/manifest.json") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ version: "1.2.2", files: Object.entries(releaseFiles).map(([name, file]) => ({ name, url: `/files/${name}`, sha256: file.sha256 })) }));
+        response.end(JSON.stringify({ version: "1.2.3", files: Object.entries(releaseFiles).map(([name, file]) => ({ name, url: `/files/${name}`, sha256: file.sha256 })) }));
         return;
       }
       if (request.method === "GET" && request.url?.startsWith("/files/")) {
@@ -153,11 +153,11 @@ async function testAgentSelfUpdateEndToEnd() {
           const report = JSON.parse(Buffer.concat(chunks).toString("utf8"));
           reports.push(report);
           const responseBody = { ok: true, monitorTasks: [] };
-          if (!dispatched && report.version === "1.2.1") {
+          if (!dispatched && report.version === "1.2.2") {
             dispatched = true;
-            responseBody.update = { version: "1.2.2", manifestUrl: "/manifest.json", attemptId };
+            responseBody.update = { version: "1.2.3", manifestUrl: "/manifest.json", attemptId };
           }
-          if (report.version === "1.2.2" && report.updateStatus?.state === "success") responseBody.updateStatusAcknowledged = true;
+          if (report.version === "1.2.3" && report.updateStatus?.state === "success") responseBody.updateStatusAcknowledged = true;
           response.writeHead(200, { "content-type": "application/json" });
           response.end(JSON.stringify(responseBody));
         });
@@ -190,11 +190,11 @@ async function testAgentSelfUpdateEndToEnd() {
       new Promise((_, reject) => setTimeout(() => reject(new Error("Agent did not restart after installing the update")), 15_000)),
     ]);
     assert.equal(firstExitCode, 75);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(installDir, "package.json"), "utf8")).version, "1.2.2");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(installDir, "package.json"), "utf8")).version, "1.2.3");
     assert.equal(JSON.parse(fs.readFileSync(path.join(agentDataDir, "update-result.json"), "utf8")).state, "success");
 
     restartedAgent = startAgent();
-    await waitFor(() => reports.some((report) => report.version === "1.2.2" && report.updateStatus?.state === "success"), "Restarted Agent did not confirm v1.2.2", 15_000);
+    await waitFor(() => reports.some((report) => report.version === "1.2.3" && report.updateStatus?.state === "success"), "Restarted Agent did not confirm v1.2.3", 15_000);
     await waitFor(() => !fs.existsSync(path.join(agentDataDir, "update-result.json")), "Agent update result was not acknowledged", 5000);
   } finally {
     await stopChild(firstAgent);
@@ -478,6 +478,11 @@ try {
   const { payload: trustedProxyChain } = await request("/api/admin/firewall", { headers: { "x-forwarded-for": "203.0.113.61, 198.51.100.20", "x-real-ip": "192.0.2.200" } });
   assert.equal(trustedProxyChain.currentIp, "203.0.113.61");
   assert.equal(trustedProxyChain.currentIpSource, "x-forwarded-for");
+  const { payload: restoredVisitorIp } = await request("/api/admin/firewall", { headers: { "x-forwarded-for": "203.0.113.63, 173.245.48.10", "cf-connecting-ip": "203.0.113.63" } });
+  assert.equal(restoredVisitorIp.currentIp, "203.0.113.63");
+  assert.equal(restoredVisitorIp.currentIpSource, "visitor-header");
+  const { payload: spoofedVisitorIp } = await request("/api/admin/firewall", { headers: { "x-forwarded-for": "192.0.2.21", "cf-connecting-ip": "203.0.113.250" } });
+  assert.equal(spoofedVisitorIp.currentIp, "192.0.2.21", "A visitor spoofed the final visitor IP header");
   const { payload: untrustedProxyChain } = await request("/api/admin/firewall", { headers: { "x-forwarded-for": "203.0.113.62, 192.0.2.20" } });
   assert.equal(untrustedProxyChain.currentIp, "192.0.2.20", "An untrusted intermediary was incorrectly skipped");
   await request("/api/admin/firewall", { method: "POST", body: { ip: "127.0.0.1", reason: "self" }, expectedStatus: 400 });
@@ -553,9 +558,9 @@ try {
   const { payload: agentLock } = await request("/downloads/agent/package-lock.json", { authenticated: false });
   assert.equal(agentLock.packages["node_modules/ws"].version, "8.21.1");
   const { payload: agentManifest } = await request("/downloads/agent/manifest.json", { authenticated: false });
-  assert.equal(agentManifest.version, "1.2.1");
+  assert.equal(agentManifest.version, "1.2.2");
   assert.deepEqual(agentManifest.files.map((file) => file.name).sort(), ["index.js", "package-lock.json", "package.json", "region.js", "updater.js"]);
-  assert.ok(agentManifest.files.every((file) => file.url.endsWith("?v=1.2.1")));
+  assert.ok(agentManifest.files.every((file) => file.url.endsWith("?v=1.2.2")));
   for (const file of agentManifest.files) {
     const content = fs.readFileSync(path.join(rootDir, "agent", file.name));
     assert.equal(file.sha256, crypto.createHash("sha256").update(content).digest("hex"));
@@ -598,6 +603,9 @@ try {
   assert.doesNotMatch(serverUpdaterSource, /Orange-Probe-Docker/);
   assert.match(serverUpdaterSource, /--volumes-from/);
   assert.match(serverUpdaterSource, /orange-probe-updater/);
+  assert.match(serverUpdaterSource, /--force-recreate/);
+  assert.match(serverUpdaterSource, /restartScope: "containers-only"/);
+  assert.doesNotMatch(serverUpdaterSource, /\b(?:reboot|shutdown)\b|systemctl\s+reboot/i);
   const dockerfileSource = fs.readFileSync(path.join(rootDir, "Dockerfile"), "utf8");
   assert.match(dockerfileSource, /^FROM node:22-alpine AS builder/m);
   assert.doesNotMatch(dockerfileSource, /BUILDPLATFORM/);
@@ -627,14 +635,15 @@ try {
   assert.equal(savedSettings.telegramOnlineAlerts, true);
 
   const { payload: initialUpdates } = await request("/api/admin/updates");
-  assert.equal(initialUpdates.server.currentVersion, "1.2.1");
-  assert.equal(initialUpdates.server.latestVersion, "1.2.2");
-  assert.equal(initialUpdates.agentPackageVersion, "1.2.1");
+  assert.equal(initialUpdates.server.currentVersion, "1.2.2");
+  assert.equal(initialUpdates.server.latestVersion, "1.2.3");
+  assert.equal(initialUpdates.agentPackageVersion, "1.2.2");
   assert.equal(initialUpdates.server.updateAvailable, true);
   assert.equal(initialUpdates.server.updaterConfigured, true);
   const { response: serverUpdateResponse, payload: serverUpdate } = await request("/api/admin/updates/server", { method: "POST", body: {} });
   assert.equal(serverUpdateResponse.status, 202);
-  assert.equal(serverUpdate.targetVersion, "1.2.2");
+  assert.equal(serverUpdate.targetVersion, "1.2.3");
+  assert.equal(serverUpdate.restartScope, "containers-only");
   assert.equal(updaterRequests.length, 1);
   assert.equal(updaterRequests[0].authorization, "Bearer smoke-update-token-12345678901234567890");
 
@@ -693,7 +702,7 @@ try {
   const { payload: updatesWithAgent } = await request("/api/admin/updates");
   const liveAgentUpdate = updatesWithAgent.agents.find((item) => item.id === agent.id);
   assert.equal(liveAgentUpdate.supportsAutoUpdate, true);
-  assert.equal(liveAgentUpdate.version, "1.2.1");
+  assert.equal(liveAgentUpdate.version, "1.2.2");
 
   const updateAgentToken = crypto.randomUUID();
   const { payload: updateAgent } = await request("/api/admin/agents", { method: "POST", body: { name: "Smoke Update Agent", token: updateAgentToken } });
@@ -701,20 +710,20 @@ try {
   await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": updateAgentToken }, body: oldUpdatePayload });
   const { payload: updateBlockedByServer } = await request("/api/admin/updates");
   const blockedAgentUpdate = updateBlockedByServer.agents.find((item) => item.id === updateAgent.id);
-  assert.equal(blockedAgentUpdate.targetVersion, "1.2.2");
+  assert.equal(blockedAgentUpdate.targetVersion, "1.2.3");
   assert.equal(blockedAgentUpdate.status, "server-required");
   assert.equal(blockedAgentUpdate.serverUpdateRequired, true);
   assert.equal(blockedAgentUpdate.updateAvailable, false);
-  mockReleaseVersion = "1.2.1";
+  mockReleaseVersion = "1.2.2";
   const { payload: refreshedAgentUpdates } = await request("/api/admin/updates?refresh=1");
   const refreshableAgent = refreshedAgentUpdates.agents.find((item) => item.id === updateAgent.id);
-  assert.equal(refreshableAgent.targetVersion, "1.2.1");
+  assert.equal(refreshableAgent.targetVersion, "1.2.2");
   assert.equal(refreshableAgent.status, "available");
   assert.equal(refreshableAgent.updateAvailable, true);
   const { payload: queuedUpdate } = await request("/api/admin/updates/agents", { method: "POST", body: { agentIds: [updateAgent.id] } });
   assert.deepEqual(queuedUpdate.queued, [updateAgent.id]);
   const { payload: updateInstruction } = await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": updateAgentToken }, body: oldUpdatePayload });
-  assert.equal(updateInstruction.update.version, "1.2.1");
+  assert.equal(updateInstruction.update.version, "1.2.2");
   assert.equal(updateInstruction.update.manifestUrl, "/downloads/agent/manifest.json");
   assert.match(updateInstruction.update.attemptId, /^[0-9a-f-]{36}$/i);
   const { payload: duplicateInstruction } = await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": updateAgentToken }, body: oldUpdatePayload });
@@ -722,7 +731,7 @@ try {
   const { payload: duplicateQueue } = await request("/api/admin/updates/agents", { method: "POST", body: { agentIds: [updateAgent.id] } });
   assert.deepEqual(duplicateQueue.queued, []);
   assert.match(duplicateQueue.skipped[0].reason, /正在执行/);
-  const { payload: completedInstruction } = await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": updateAgentToken }, body: { ...oldUpdatePayload, version: "1.2.1", updateStatus: { state: "success", targetVersion: "1.2.1", attemptId: updateInstruction.update.attemptId } } });
+  const { payload: completedInstruction } = await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": updateAgentToken }, body: { ...oldUpdatePayload, version: "1.2.2", updateStatus: { state: "success", targetVersion: "1.2.2", attemptId: updateInstruction.update.attemptId } } });
   assert.equal(completedInstruction.updateStatusAcknowledged, true);
   const { payload: completedUpdates } = await request("/api/admin/updates");
   assert.equal(completedUpdates.agents.find((item) => item.id === updateAgent.id).status, "completed");
@@ -731,6 +740,12 @@ try {
   assert.match(updateManagementSource, /active \|\| working/);
   assert.match(updateManagementSource, /\?refresh=1/);
   assert.match(updateManagementSource, /检查中/);
+  assert.match(updateManagementSource, /savePendingServerRefresh/);
+  assert.match(updateManagementSource, /宿主机/);
+  const applicationSource = fs.readFileSync(path.join(rootDir, "src", "App.tsx"), "utf8");
+  assert.match(applicationSource, /readPendingServerRefresh/);
+  assert.match(applicationSource, /window\.location\.reload\(\)/);
+  assert.match(applicationSource, /\/api\/health/);
   const agentSource = fs.readFileSync(path.join(rootDir, "agent", "index.js"), "utf8");
   assert.match(agentSource, /refreshUpdateStatusFromDisk/);
   assert.match(agentSource, /updateStatusAcknowledged/);
@@ -743,7 +758,7 @@ try {
   await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": timeoutAgentToken }, body: timeoutPayload });
   await request("/api/admin/updates/agents", { method: "POST", body: { agentIds: [timeoutAgent.id] } });
   const { payload: timeoutInstruction } = await request("/api/agents/report", { method: "POST", authenticated: false, headers: { "x-probe-token": timeoutAgentToken }, body: timeoutPayload });
-  assert.equal(timeoutInstruction.update.version, "1.2.1");
+  assert.equal(timeoutInstruction.update.version, "1.2.2");
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const { payload: timedOutUpdates } = await request("/api/admin/updates");
   const timedOutEntry = timedOutUpdates.agents.find((item) => item.id === timeoutAgent.id);
@@ -760,17 +775,38 @@ try {
     const { payload } = await request(`/api/services/${service.id}/history?serverId=${agent.id}&period=realtime`);
     return payload.points.some((point) => point.source === "agent");
   }, "Agent monitor result was not returned", 12_000, 500);
+  const { payload: defaultPortService } = await request("/api/admin/services", {
+    method: "POST",
+    body: { name: "Smoke Default Port TCP", type: "tcp", target: "127.0.0.1", interval: 5, serverIds: [agent.id], enabled: false },
+  });
+  assert.equal(defaultPortService.target, "127.0.0.1");
+  await request(`/api/admin/services/${defaultPortService.id}`, { method: "DELETE" });
   const { payload: secondaryService } = await request("/api/admin/services", {
     method: "POST",
-    body: { name: "Smoke TCP Monitor", type: "tcp", target: "127.0.0.1:443", interval: 5, serverIds: [agent.id], enabled: false },
+    body: { name: "Smoke TCP Monitor", type: "tcp", target: `127.0.0.1:${mockPort}`, interval: 5, serverIds: [agent.id], enabled: true },
   });
   const { payload: intervalUpdate } = await request("/api/admin/services/interval", { method: "PUT", body: { interval: 5 } });
   assert.equal(intervalUpdate.updated, 2);
   assert.ok(intervalUpdate.services.every((item) => item.interval === 5));
+  const tcpHistory = await waitFor(async () => {
+    const { payload } = await request(`/api/services/${secondaryService.id}/history?serverId=${agent.id}&period=realtime`);
+    return payload.points.find((point) => point.source === "agent" && point.success) ? payload : null;
+  }, "Agent TCPing result was not returned", 15_000, 500);
+  const tcpPoint = tcpHistory.points.filter((point) => point.success && point.latency !== null).at(-1);
+  assert.ok(tcpPoint.latency < 250, `Local TCPing latency was unexpectedly high (${tcpPoint.latency} ms)`);
   const serviceManagementSource = fs.readFileSync(path.join(rootDir, "src", "components", "ServiceManagement.tsx"), "utf8");
   assert.match(serviceManagementSource, /应用到全部/);
   assert.match(serviceManagementSource, /min="5"/);
   assert.doesNotMatch(serviceManagementSource, /立即测试|最近结果/);
+  const agentMonitorSource = fs.readFileSync(path.join(rootDir, "agent", "index.js"), "utf8");
+  assert.match(agentMonitorSource, /dns\.lookup/);
+  assert.match(agentMonitorSource, /highLatencyThresholdMs = 1000/);
+  assert.match(agentMonitorSource, /highLatencyRetries = 3/);
+  assert.match(agentMonitorSource, /tcpRetransmissionDropMs = 800/);
+  assert.match(agentMonitorSource, /Suspicious TCP handshake retransmission detected/);
+  assert.doesNotMatch(agentMonitorSource, /tcpPingSamples|latencies\.sort/);
+  const formatSource = fs.readFileSync(path.join(rootDir, "src", "lib", "format.ts"), "utf8");
+  assert.match(formatSource, /stableLatencyValues/);
 
   const wsToken = crypto.randomUUID();
   const { payload: wsAgent } = await request("/api/admin/agents", { method: "POST", body: { name: "Smoke WSS Agent", token: wsToken } });

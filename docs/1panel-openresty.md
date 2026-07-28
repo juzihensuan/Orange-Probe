@@ -193,7 +193,7 @@ PROBE_WS_URL=wss://probe.example.com/agent-ws
 
 ## 7. 验证真实 IP 与防火墙
 
-Orange Probe 会先检查与它直接建立连接的上游地址。只有这个地址命中 `TRUST_PROXY` 时，应用才会读取 `X-Forwarded-For`；没有该请求头时才回退到 `X-Real-IP`。来自非可信连接的同名请求头会被忽略，避免访客伪造 IP 绕过封禁。
+Orange Probe 会解析完整代理链并优先还原最终访问者地址，不再把中间代理出口记录成访客 IP。普通反代仍只在直接上游命中 `TRUST_PROXY` 时读取 `X-Forwarded-For`，没有该请求头时才回退到 `X-Real-IP`；来自非可信连接的伪造访客头会被忽略。
 
 默认值为：
 
@@ -209,7 +209,7 @@ TRUST_PROXY=loopback, linklocal, uniquelocal, 203.0.113.0/24, 2001:db8:1234::/48
 
 只能加入你控制或确认可信的代理范围，禁止填写 `0.0.0.0/0`、`::/0` 或不受控的公网网段。修改后运行 `docker compose up -d --force-recreate orange-probe`。
 
-登录后台“防火墙”页面，检查“当前访问 IP”及括号内的识别来源。这里必须显示管理员真实公网 IP，不能是：
+登录后台“防火墙”页面，检查“当前访问 IP”及括号内的识别来源。识别来源显示“最终访问者”时，表示已经从受信代理链还原成功。这里必须显示管理员真实公网 IP，不能是：
 
 - `127.0.0.1`
 - OpenResty 容器 IP

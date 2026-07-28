@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
+import dns from "node:dns/promises";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +25,10 @@ const agentLogDir = path.join(agentDataDir, "logs");
 const updateResultFile = path.join(agentDataDir, "update-result.json");
 const logRetentionDays = Math.min(90, Math.max(1, Number(process.env.AGENT_LOG_RETENTION_DAYS || 7)));
 const logRetentionMs = logRetentionDays * 24 * 60 * 60 * 1000;
+const monitorProbeTimeoutMs = 3000;
+const highLatencyThresholdMs = 1000;
+const highLatencyRetries = 3;
+const tcpRetransmissionDropMs = 800;
 const tags = (process.env.PROBE_TAGS || "remote")
   .split(",")
   .map((item) => item.trim())
@@ -243,7 +250,7 @@ const staticInfo = {
   arch: os.arch(),
   cpuModel: cpuInfo.model || "Unknown CPU",
   cpuCores: os.cpus().length,
-  version: "1.2.1",
+  version: "1.2.2",
   capabilities: ["self-update"],
   tags,
   reportInterval: interval,
@@ -504,27 +511,63 @@ function getNetworkMetrics(counters) {
   return result;
 }
 
-function agentIcmpPing(target) {
-  const args = process.platform === "win32" ? ["-n", "1", "-w", "3000", target] : ["-c", "1", "-W", "3", target];
-  const startedAt = performance.now();
-  return new Promise((resolve) => {
-    execFile("ping", args, { timeout: 5000, windowsHide: true, maxBuffer: 512 * 1024 }, (error, stdout) => {
-      const match = String(stdout).match(/(?:time|时间)?[=<]\s*(\d+(?:\.\d+)?)\s*ms/i);
-      resolve({ success: !error, latency: !error ? Number(match?.[1]) || performance.now() - startedAt : null, error: error ? "ICMP request failed" : "" });
-    });
-  });
+async function resolveMonitorAddress(hostname) {
+  const normalizedHostname = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const family = net.isIP(normalizedHostname);
+  if (family) return { address: normalizedHostname, family };
+  const resolved = await dns.lookup(normalizedHostname, { all: true, verbatim: false });
+  if (!resolved.length) throw new Error("Monitor target did not resolve to an IP address");
+  return resolved[0];
 }
 
-function agentTcpPing(target) {
-  let parsed;
+async function agentIcmpPing(target) {
+  const hostname = String(target || "").trim().replace(/^\[|\]$/g, "");
+  if (!hostname) return { success: false, latency: null, error: "Invalid ICMP target" };
   try {
-    parsed = new URL(`tcp://${target}`);
-  } catch {
-    return Promise.resolve({ success: false, latency: null, error: "Invalid TCP target" });
+    const resolved = await resolveMonitorAddress(hostname);
+    const args = process.platform === "win32"
+      ? ["-n", "1", "-w", String(monitorProbeTimeoutMs), resolved.address]
+      : ["-c", "1", "-W", String(Math.ceil(monitorProbeTimeoutMs / 1000)), resolved.address];
+    const startedAt = performance.now();
+    return await new Promise((resolve) => {
+      execFile("ping", args, { timeout: monitorProbeTimeoutMs + 2000, windowsHide: true, maxBuffer: 512 * 1024 }, (error, stdout) => {
+        if (error) {
+          resolve({ success: false, latency: null, error: "ICMP request failed" });
+          return;
+        }
+        const output = String(stdout);
+        const match = output.match(/(?:time|\u65f6\u95f4)[=<]\s*(\d+(?:\.\d+)?)\s*ms/i)
+          || output.match(/(?:average|\u5e73\u5747)\s*=\s*(\d+(?:\.\d+)?)\s*ms/i);
+        const measured = Number(match?.[1]);
+        const latency = Number.isFinite(measured) ? measured : performance.now() - startedAt;
+        resolve({ success: true, latency: Math.max(0, Math.floor(latency)), error: "" });
+      });
+    });
+  } catch (error) {
+    return { success: false, latency: null, error: error instanceof Error ? error.message : "ICMP target resolution failed" };
   }
-  const startedAt = performance.now();
+}
+
+function parseTcpTarget(target) {
+  const value = String(target || "").trim();
+  if (!value || /[/?#@]/.test(value)) return null;
+  if (value.startsWith("[")) {
+    const match = value.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    if (!match || net.isIP(match[1]) !== 6) return null;
+    const port = match[2] ? Number(match[2]) : 80;
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? { hostname: match[1], port } : null;
+  }
+  if (net.isIP(value)) return { hostname: value, port: 80 };
+  const match = value.match(/^([^:\s]+)(?::(\d+))?$/);
+  if (!match) return null;
+  const port = match[2] ? Number(match[2]) : 80;
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? { hostname: match[1], port } : null;
+}
+
+function tcpConnect(address, port, family) {
   return new Promise((resolve) => {
-    const socket = net.createConnection({ host: parsed.hostname, port: Number(parsed.port) });
+    const socket = new net.Socket();
+    const startedAt = performance.now();
     let settled = false;
     const finish = (result) => {
       if (settled) return;
@@ -532,24 +575,102 @@ function agentTcpPing(target) {
       socket.destroy();
       resolve(result);
     };
-    socket.setTimeout(5000);
-    socket.once("connect", () => finish({ success: true, latency: performance.now() - startedAt, error: "" }));
+    socket.setNoDelay(true);
+    socket.setTimeout(monitorProbeTimeoutMs);
+    socket.once("connect", () => finish({ success: true, latency: Math.max(0, Math.floor(performance.now() - startedAt)), error: "" }));
     socket.once("timeout", () => finish({ success: false, latency: null, error: "TCP connection timed out" }));
     socket.once("error", (error) => finish({ success: false, latency: null, error: error.code || error.message }));
+    socket.connect({ host: address, port, family });
   });
 }
 
-async function runAgentMonitor(task) {
-  if (task.type === "icmp") return agentIcmpPing(task.target);
-  if (task.type === "tcp") return agentTcpPing(task.target);
-  const startedAt = performance.now();
+async function agentTcpPing(target) {
+  const parsed = parseTcpTarget(target);
+  if (!parsed) return { success: false, latency: null, error: "Invalid TCP target" };
   try {
-    const response = await fetch(task.target, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(7000) });
-    response.body?.cancel();
-    return { success: response.ok, latency: performance.now() - startedAt, statusCode: response.status, error: response.ok ? "" : `HTTP ${response.status}` };
+    const resolved = await resolveMonitorAddress(parsed.hostname);
+    return tcpConnect(resolved.address, parsed.port, resolved.family);
   } catch (error) {
-    return { success: false, latency: null, error: error instanceof Error ? error.message : "HTTP request failed" };
+    return { success: false, latency: null, error: error instanceof Error ? error.message : "TCP target resolution failed" };
   }
+}
+
+function httpConnect(url, address, family, timeout) {
+  const client = url.protocol === "https:" ? https : http;
+  return new Promise((resolve) => {
+    const startedAt = performance.now();
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve({ ...result, latency: Math.max(0, Math.floor(performance.now() - startedAt)) });
+    };
+    const request = client.get({
+      protocol: url.protocol,
+      hostname: address,
+      family,
+      port: url.port || undefined,
+      path: `${url.pathname}${url.search}`,
+      headers: { Host: url.host, Connection: "close" },
+      servername: net.isIP(url.hostname) ? undefined : url.hostname,
+      agent: false,
+      timeout,
+    }, (response) => {
+      response.resume();
+      finish({ statusCode: response.statusCode || 0, location: response.headers.location || "", error: "" });
+    });
+    request.once("timeout", () => request.destroy(new Error("HTTP request timed out")));
+    request.once("error", (error) => finish({ statusCode: 0, location: "", error: error instanceof Error ? error.message : "HTTP request failed" }));
+  });
+}
+
+async function agentHttpPing(target) {
+  let current;
+  try {
+    current = new URL(String(target || ""));
+  } catch (error) {
+    return { success: false, latency: null, error: "Invalid HTTP target" };
+  }
+  let totalLatency = 0;
+  for (let redirect = 0; redirect <= 10; redirect += 1) {
+    if (current.protocol !== "http:" && current.protocol !== "https:") return { success: false, latency: null, error: "Invalid HTTP target" };
+    try {
+      const resolved = await resolveMonitorAddress(current.hostname);
+      const result = await httpConnect(current, resolved.address, resolved.family, Math.max(1, monitorProbeTimeoutMs - totalLatency));
+      totalLatency += result.latency;
+      if (result.error) return { success: false, latency: null, error: result.error };
+      if ([301, 302, 303, 307, 308].includes(result.statusCode) && result.location) {
+        if (redirect === 10) return { success: false, latency: null, error: "Too many HTTP redirects" };
+        if (totalLatency >= monitorProbeTimeoutMs) return { success: false, latency: null, error: "HTTP request timed out" };
+        current = new URL(result.location, current);
+        continue;
+      }
+      const success = result.statusCode >= 200 && result.statusCode < 400;
+      return { success, latency: success ? totalLatency : null, statusCode: result.statusCode, error: success ? "" : `HTTP ${result.statusCode}` };
+    } catch (error) {
+      return { success: false, latency: null, error: error instanceof Error ? error.message : "HTTP request failed" };
+    }
+  }
+  return { success: false, latency: null, error: "Too many HTTP redirects" };
+}
+
+async function runAgentMonitor(task) {
+  const measure = () => task.type === "icmp" ? agentIcmpPing(task.target) : task.type === "tcp" ? agentTcpPing(task.target) : agentHttpPing(task.target);
+  let result = await measure();
+  if (!result.success || !Number.isFinite(result.latency) || result.latency <= highLatencyThresholdMs) return result;
+  const firstLatency = result.latency;
+  for (let attempt = 0; attempt < highLatencyRetries; attempt += 1) {
+    const retry = await measure();
+    if (!retry.success || !Number.isFinite(retry.latency)) return retry;
+    if (retry.latency <= highLatencyThresholdMs) {
+      if (task.type === "tcp" && firstLatency - retry.latency > tcpRetransmissionDropMs) {
+        return { success: false, latency: null, error: "Suspicious TCP handshake retransmission detected" };
+      }
+      return retry;
+    }
+    result = retry;
+  }
+  return { success: false, latency: null, error: `Latency remained above ${highLatencyThresholdMs} ms after retries` };
 }
 
 async function runDueMonitors() {

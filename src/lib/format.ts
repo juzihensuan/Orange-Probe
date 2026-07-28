@@ -57,6 +57,20 @@ export function average(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+export function stableLatencyValues(values: number[]) {
+  const finite = values.filter((value) => Number.isFinite(value) && value >= 0);
+  if (finite.length < 3) return finite;
+  const sorted = [...finite].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  const deviations = sorted.map((value) => Math.abs(value - median)).sort((left, right) => left - right);
+  const deviationMiddle = Math.floor(deviations.length / 2);
+  const medianDeviation = deviations.length % 2 ? deviations[deviationMiddle] : (deviations[deviationMiddle - 1] + deviations[deviationMiddle]) / 2;
+  const upperBound = median + Math.max(25, median, medianDeviation * 6);
+  const stable = finite.filter((value) => value <= upperBound);
+  return stable.length ? stable : finite;
+}
+
 export function severityClass(value: number, warning = 70, danger = 90) {
   if (value >= danger) return "danger";
   if (value >= warning) return "warning";
